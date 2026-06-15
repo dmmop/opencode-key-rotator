@@ -23,6 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/setup-node@v4
         with:
@@ -46,7 +47,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version=$(node -p "require('./package.json').version")
-          gh release create "v${version}" --generate-notes --title "v${version}"
+          prev_tag=$(git tag --sort=-version:refname | grep '^v' | sed -n '2p')
+          if [ -n "$prev_tag" ]; then
+            echo "## What's Changed" > .release-notes.md
+            git log --oneline --no-decorate "${prev_tag}..HEAD" -- . >> .release-notes.md
+            gh release create "v${version}" --title "v${version}" -F .release-notes.md
+            rm .release-notes.md
+          else
+            gh release create "v${version}" --title "v${version}" --generate-notes
+          fi
       - name: Upgrade npm & publish
         run: |
           npm install -g npm@latest
