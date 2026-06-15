@@ -37,9 +37,11 @@ export function readLastRotationDecision(store: KeyStore): RotationLogEntry | un
   try {
     if (!fs.existsSync(store.paths.rotationLogFile)) return undefined
     const lines = fs.readFileSync(store.paths.rotationLogFile, "utf8").trim().split("\n").filter(Boolean)
-    const last = lines.at(-1)
-    if (!last) return undefined
-    return JSON.parse(last) as RotationLogEntry
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const entry = JSON.parse(lines[index]) as RotationLogEntry
+      if (entry.reason !== "manual_abort") return entry
+    }
+    return undefined
   } catch {
     return undefined
   }

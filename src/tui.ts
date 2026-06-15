@@ -8,7 +8,6 @@ const id = "opencode-key-rotator"
 
 const tui: TuiPlugin = async (api) => {
   registerSlashCommand(api, "key-save", "Save current provider key", () => openSaveKey(api))
-  registerSlashCommand(api, "key-list", "List saved provider keys", () => openKeyList(api))
   registerSlashCommand(api, "key-switch", "Switch active provider key", () => openKeySwitch(api))
   registerSlashCommand(api, "key-status", "Show key rotation status", () => openKeyStatus(api))
 }
@@ -106,26 +105,6 @@ function saveKey(api: TuiPluginApi, store: KeyStore, providerID: string, alias: 
   api.ui.toast({ variant: "success", title: "Key saved", message: `${providerID}/${alias} saved as active.` })
 }
 
-function openKeyList(api: TuiPluginApi): void {
-  const store = getStore(api)
-  if (!store) return
-  const keys = safeCall(() => store.listKeys(), api)
-  if (!keys || keys.length === 0) {
-    showAlert(api, "No saved keys", `No provider keys were found in:\n${store.paths.keysDir}\n\nUse /key-save after /connect.`)
-    return
-  }
-
-  api.ui.dialog.replace(() => api.ui.DialogSelect({
-    title: "Saved provider keys",
-    options: keys.map((key) => ({
-      title: `${key.providerID}/${key.alias}`,
-      value: `${key.providerID}/${key.alias}`,
-      description: key.providerID,
-    })),
-    onSelect: () => undefined,
-  }))
-}
-
 function openKeySwitch(api: TuiPluginApi): void {
   const store = getStore(api)
   if (!store) return
@@ -179,10 +158,8 @@ function openKeyStatus(api: TuiPluginApi): void {
   const lastDecision = readLastRotationDecision(store)
 
   const lines = statuses.length === 0
-    ? ["No saved keys found.", "", "Use /key-save after /connect to save the current provider credentials."]
+    ? ["No provider keys saved yet.", "", "Use /key-save after /connect to save the current provider credentials."]
     : formatStatusTable(statuses)
-
-  lines.push("", "Paths", "-----", `data : ${store.paths.dataDir}`, `keys : ${store.paths.keysDir}`)
 
   const authWarnings = [...new Set(statuses.map((status) => status.authWarning).filter((warning): warning is string => Boolean(warning)))]
   if (authWarnings.length > 0) {
@@ -193,9 +170,8 @@ function openKeyStatus(api: TuiPluginApi): void {
     lines.push("")
     lines.push("Last rotation")
     lines.push("-------------")
-    lines.push(`decision : ${lastDecision.decision}`)
-    lines.push(`reason   : ${lastDecision.reason}`)
-    lines.push(`provider : ${lastDecision.providerID ?? "unknown"}`)
+    lines.push(`provider : ${lastDecision.providerID ?? "-"}`)
+    lines.push(`trigger  : ${formatRotationReason(lastDecision.reason)}`)
   }
 
   showAlert(api, "Key rotation status", lines.join("\n"))
@@ -204,24 +180,42 @@ function openKeyStatus(api: TuiPluginApi): void {
 function formatStatusTable(statuses: KeyStatus[]): string[] {
   const rows = statuses.map((status) => ({
     provider: status.providerID,
-    active: status.activeAlias ?? "none",
+    active: status.activeAlias ?? "-",
     saved: String(status.aliases.length),
-    sync: status.synced === undefined ? "unknown" : status.synced ? "yes" : "no",
+    status: formatProviderHealth(status),
     aliases: status.aliases.length > 0 ? status.aliases.join(", ") : "-",
   }))
   const widths = {
     provider: Math.max("Provider".length, ...rows.map((row) => row.provider.length)),
     active: Math.max("Active".length, ...rows.map((row) => row.active.length)),
     saved: Math.max("Saved".length, ...rows.map((row) => row.saved.length)),
-    sync: Math.max("Sync".length, ...rows.map((row) => row.sync.length)),
+    status: Math.max("Status".length, ...rows.map((row) => row.status.length)),
   }
-  const header = `${pad("Provider", widths.provider)}  ${pad("Active", widths.active)}  ${pad("Saved", widths.saved)}  ${pad("Sync", widths.sync)}  Aliases`
-  const divider = `${"-".repeat(widths.provider)}  ${"-".repeat(widths.active)}  ${"-".repeat(widths.saved)}  ${"-".repeat(widths.sync)}  -------`
+  const header = `${pad("Provider", widths.provider)}  ${pad("Active", widths.active)}  ${pad("Saved", widths.saved)}  ${pad("Status", widths.status)}  Aliases`
+  const divider = `${"-".repeat(widths.provider)}  ${"-".repeat(widths.active)}  ${"-".repeat(widths.saved)}  ${"-".repeat(widths.status)}  -------`
   return [
     header,
     divider,
-    ...rows.map((row) => `${pad(row.provider, widths.provider)}  ${pad(row.active, widths.active)}  ${pad(row.saved, widths.saved)}  ${pad(row.sync, widths.sync)}  ${row.aliases}`),
+    ...rows.map((row) => `${pad(row.provider, widths.provider)}  ${pad(row.active, widths.active)}  ${pad(row.saved, widths.saved)}  ${pad(row.status, widths.status)}  ${row.aliases}`),
   ]
+}
+
+function formatProviderHealth(status: KeyStatus): string {
+  if (status.aliases.length === 0) return "-"
+  if (!status.activeAlias) return "no active alias"
+  if (status.synced === false) return "active credentials changed outside key rotator"
+  if (status.synced === undefined) return "saved keys available"
+  return "ready"
+}
+
+function formatRotationReason(reason: string): string {
+  if (reason === "matched_rotation_patterns") return "Rate limit detected"
+  if (reason === "provider_has_less_than_two_saved_keys") return "No alternative key available"
+  if (reason === "rotatable_error_without_provider_id" || reason === "rotatable_retry_without_provider_id") return "Provider could not be determined"
+  if (reason === "active_credentials_changed_outside_plugin") return "Active credentials changed outside key rotator"
+  if (reason === "key_store_error") return "Key store error"
+  if (reason === "unexpected_rotation_error") return "Unexpected rotation error"
+  return reason.replace(/_/g, " ")
 }
 
 function getStore(api: TuiPluginApi): KeyStore | undefined {
