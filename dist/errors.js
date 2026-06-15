@@ -1,6 +1,8 @@
 export class KeyStoreError extends Error {
-    constructor(message) {
+    code;
+    constructor(code, message) {
         super(message);
+        this.code = code;
         this.name = "KeyStoreError";
     }
 }

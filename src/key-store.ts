@@ -1,7 +1,6 @@
 import * as crypto from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { getAuthPaths } from "./opencode-runtime-paths.js"
 import { KeyStoreError } from "./errors.js"
 
 export type JsonObject = Record<string, unknown>
@@ -52,7 +51,8 @@ export type KeyStore = ReturnType<typeof createKeyStore>
 
 const MAX_AUTH_BACKUPS = 10
 const LOCK_TTL_MS = 30_000
-const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+const SAFE_SEGMENT = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?$/
+const RESERVED_SEGMENTS = new Set(["backups", ".lock"])
 
 export function createKeyStore(dataDir: string) {
   const paths = createKeyStorePaths(dataDir)
@@ -63,26 +63,33 @@ export function createKeyStore(dataDir: string) {
   }
 
   function readAuth(): JsonObject {
-    const content = readAuthFileSync()
-    if (content === null) return {}
-    if (!isJsonObject(content)) throw new KeyStoreError("OpenCode auth file must contain a JSON object")
-    return content
+    return readAuthOptional()
+  }
+
+  function readAuthOptional(): JsonObject {
+    if (!fs.existsSync(paths.authFile)) return {}
+    return readJsonObject(paths.authFile, "OpenCode auth file")
+  }
+
+  function readAuthRequired(): JsonObject {
+    if (!fs.existsSync(paths.authFile)) throw new KeyStoreError("AUTH_MISSING", `OpenCode auth file was not found at ${paths.authFile}`)
+    return readJsonObject(paths.authFile, "OpenCode auth file")
   }
 
   function readActiveState(): ActiveState {
     if (!fs.existsSync(paths.activeFile)) return { providers: {} }
     const active = readJsonObject(paths.activeFile, "active key file")
-    if (!isJsonObject(active.providers)) throw new KeyStoreError("active key file must contain a providers object")
+    if (!isJsonObject(active.providers)) throw new KeyStoreError("AUTH_INVALID", "active key file must contain a providers object")
 
     const providers: Record<string, ActiveProvider> = {}
     for (const [providerID, value] of Object.entries(active.providers)) {
       validateProviderID(providerID)
       if (!isJsonObject(value) || typeof value.alias !== "string" || typeof value.updatedAt !== "string") {
-        throw new KeyStoreError(`Invalid active metadata for provider '${providerID}'`)
+        throw new KeyStoreError("AUTH_INVALID", `Invalid active metadata for provider '${providerID}'`)
       }
       validateAlias(value.alias)
       if (!isFingerprint(value.fingerprint)) {
-        throw new KeyStoreError(`Invalid fingerprint metadata for provider '${providerID}'`)
+        throw new KeyStoreError("AUTH_INVALID", `Invalid fingerprint metadata for provider '${providerID}'`)
       }
       providers[providerID] = {
         alias: value.alias,
@@ -111,7 +118,7 @@ export function createKeyStore(dataDir: string) {
   }
 
   function listProviderIDs(): string[] {
-    const auth = readAuth()
+    const auth = readAuthRequired()
     const active = readActiveState()
     const fromKeys = listKeys().map((entry) => entry.providerID)
     return [...new Set([...Object.keys(auth), ...Object.keys(active.providers), ...fromKeys])].sort()
@@ -158,7 +165,7 @@ export function createKeyStore(dataDir: string) {
     const auth = readAuth()
     const credential = auth[providerID]
     if (!isJsonObject(credential)) {
-      throw new KeyStoreError(`Provider '${providerID}' was not found in auth.json`)
+      throw new KeyStoreError("AUTH_MISSING", `Provider '${providerID}' was not found in auth.json`)
     }
 
     return withLock(() => {
@@ -190,10 +197,10 @@ export function createKeyStore(dataDir: string) {
   function previewCurrentProviderKey(providerID: string, alias: string): { exists: boolean; fingerprintChanged: boolean; fingerprint: Fingerprint; existingFingerprint?: Fingerprint } {
     validateProviderID(providerID)
     validateAlias(alias)
-    const auth = readAuth()
+    const auth = readAuthRequired()
     const credential = auth[providerID]
     if (!isJsonObject(credential)) {
-      throw new KeyStoreError(`Provider '${providerID}' was not found in auth.json`)
+      throw new KeyStoreError("AUTH_MISSING", `Provider '${providerID}' was not found in auth.json`)
     }
     const fingerprint = calculateFingerprint(credential)
     const file = keyFilePath(providerID, alias)
@@ -218,7 +225,7 @@ export function createKeyStore(dataDir: string) {
       const currentAlias = active.providers[providerID]?.alias
       const currentIndex = currentAlias ? keys.findIndex((entry) => entry.alias === currentAlias) : -1
       const next = keys[(currentIndex + 1 + keys.length) % keys.length]
-      return switchProviderKeyUnlocked(providerID, next.alias, "auto-rotate", false)
+      return switchProviderKeyUnlocked(providerID, next.alias, "auto-rotate", true)
     })
   }
 
@@ -238,14 +245,19 @@ export function createKeyStore(dataDir: string) {
     chmodIfExists(paths.backupsDir, 0o700)
 
     if (!fs.existsSync(paths.authFile)) {
-      throw new KeyStoreError("Cannot back up auth.json because it does not exist")
+      throw new KeyStoreError("AUTH_MISSING", "Cannot back up auth.json because it does not exist")
     }
 
     const safeReason = reason.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "auth-write"
-    const backupFile = path.join(paths.backupsDir, `auth-${timestampForFile()}-${safeReason}.json`)
-    fs.copyFileSync(paths.authFile, backupFile, fs.constants.COPYFILE_EXCL)
-    chmodIfExists(backupFile, 0o600)
-    return backupFile
+    const backupFile = path.join(paths.backupsDir, `auth-${timestampForFile()}-${process.pid}-${safeReason}.json`)
+    try {
+      fs.copyFileSync(paths.authFile, backupFile, fs.constants.COPYFILE_EXCL)
+      chmodIfExists(backupFile, 0o600)
+      return backupFile
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new KeyStoreError("BACKUP_FAILED", `Failed to back up auth.json: ${message}`)
+    }
   }
 
   function pruneAuthBackups(maxBackups = MAX_AUTH_BACKUPS): void {
@@ -269,12 +281,13 @@ export function createKeyStore(dataDir: string) {
     const previousAlias = previous?.alias
 
     if (previous) {
-      const auth = readAuth()
+      const auth = readAuthRequired()
       const currentCredential = auth[providerID]
-      if (!isJsonObject(currentCredential)) throw new KeyStoreError(`Provider '${providerID}' was not found in auth.json`)
+      if (currentCredential === undefined) throw new KeyStoreError("AUTH_MISSING", `Provider '${providerID}' was not found in auth.json`)
+      if (!isJsonObject(currentCredential)) throw new KeyStoreError("AUTH_INVALID", `Provider '${providerID}' in auth.json must contain a JSON object`)
       const currentFingerprint = calculateFingerprint(currentCredential)
       if (!sameFingerprint(currentFingerprint, previous.fingerprint)) {
-        throw new KeyStoreError(`Active ${providerID} credentials no longer match alias '${previous.alias}'. Run /key-save before switching.`)
+        throw new KeyStoreError("FINGERPRINT_MISMATCH", `Active ${providerID} credentials no longer match alias '${previous.alias}'. Run /key-save before switching.`)
       }
       if (persistCurrent) {
         writeJsonAtomic(keyFilePath(providerID, previous.alias), currentCredential)
@@ -283,7 +296,7 @@ export function createKeyStore(dataDir: string) {
 
     const next = readJsonObject(keyFilePath(providerID, alias), `key '${providerID}/${alias}'`)
     const nextFingerprint = calculateFingerprint(next)
-    const auth = readAuth()
+    const auth = readAuthRequired()
     backupAuth(reason)
     auth[providerID] = next
     writeJsonAtomic(paths.authFile, auth)
@@ -331,9 +344,13 @@ export function createKeyStore(dataDir: string) {
     try {
       fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, createdAt: new Date(now).toISOString() }), { flag: "wx", mode: 0o600 })
     } catch (error) {
-      if (!isStaleLock(lockFile, now)) throw new KeyStoreError("Key store is busy. Try again in a moment.")
+      if (!isStaleLock(lockFile, now)) throw new KeyStoreError("BUSY", "Key store is busy. Try again in a moment.")
       fs.rmSync(lockFile, { force: true })
-      fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, createdAt: new Date(now).toISOString() }), { flag: "wx", mode: 0o600 })
+      try {
+        fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, createdAt: new Date(now).toISOString() }), { flag: "wx", mode: 0o600 })
+      } catch {
+        throw new KeyStoreError("LOCK_RACE", "Key store is busy. Try again in a moment.")
+      }
     }
 
     try {
@@ -419,13 +436,17 @@ function sameFingerprint(left: Fingerprint, right: Fingerprint): boolean {
 }
 
 function validateProviderID(providerID: string): void {
-  if (!SAFE_SEGMENT.test(providerID) || providerID.includes("..")) throw new KeyStoreError("Invalid provider ID")
+  if (!isSafeSegment(providerID)) throw new KeyStoreError("INVALID_INPUT", "Invalid provider ID")
 }
 
 function validateAlias(alias: string): void {
-  if (!SAFE_SEGMENT.test(alias) || alias.includes("..")) {
-    throw new KeyStoreError("Alias must contain only letters, numbers, dots, underscores, or dashes")
+  if (!isSafeSegment(alias)) {
+    throw new KeyStoreError("INVALID_INPUT", "Alias must contain only letters, numbers, dots, underscores, or dashes, and cannot use reserved names")
   }
+}
+
+function isSafeSegment(segment: string): boolean {
+  return SAFE_SEGMENT.test(segment) && !segment.includes("..") && !RESERVED_SEGMENTS.has(segment)
 }
 
 function readJsonObject(file: string, label: string): JsonObject {
@@ -434,9 +455,9 @@ function readJsonObject(file: string, label: string): JsonObject {
     parsed = JSON.parse(fs.readFileSync(file, "utf8"))
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    throw new KeyStoreError(`Failed to read ${label}: ${message}`)
+    throw new KeyStoreError("AUTH_INVALID", `Failed to read ${label}: ${message}`)
   }
-  if (!isJsonObject(parsed)) throw new KeyStoreError(`${label} must contain a JSON object`)
+  if (!isJsonObject(parsed)) throw new KeyStoreError("AUTH_INVALID", `${label} must contain a JSON object`)
   return parsed
 }
 
@@ -449,7 +470,7 @@ function isStaleLock(lockFile: string, now: number): boolean {
 }
 
 function timestampForFile(): string {
-  return new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z")
+  return new Date().toISOString().replace(/[-:]/g, "").replace(/\./g, "")
 }
 
 function chmodIfExists(file: string, mode: number): void {
@@ -477,16 +498,4 @@ function stringValue(value: unknown): string | undefined {
 
 function redactCredentialShape(credential: JsonObject): JsonObject {
   return Object.fromEntries(Object.keys(credential).sort().map((key) => [key, typeof credential[key]]))
-}
-
-/** Read the first readable auth.json candidate. Returns null if none exist. */
-function readAuthFileSync(): unknown | null {
-  for (const candidate of getAuthPaths()) {
-    try {
-      return JSON.parse(fs.readFileSync(candidate, "utf-8"))
-    } catch {
-      // Try next candidate.
-    }
-  }
-  return null
 }

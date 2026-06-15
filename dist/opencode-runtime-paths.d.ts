@@ -13,6 +13,7 @@ export type OpencodeRuntimeDirCandidates = {
 export type RuntimePathParams = {
     env?: NodeJS.ProcessEnv;
     homeDir?: string;
+    platform?: NodeJS.Platform;
 };
 export type RuntimeDirCandidateParams = RuntimePathParams & {
     platform?: NodeJS.Platform;
@@ -34,6 +35,7 @@ export declare function getOpencodeRuntimeDirs(params?: RuntimePathParams): Open
  * platform fallbacks for alternate/legacy installs.
  */
 export declare function getAuthPaths(): string[];
+export declare function resolveOpencodeDataDir(pathInfo?: unknown): string;
 /**
  * Generate prioritized candidate directories for OpenCode runtime paths.
  *

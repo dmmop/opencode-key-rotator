@@ -1,5 +1,5 @@
 import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
-import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js"
+import { resolveOpencodeDataDir } from "./opencode-runtime-paths.js"
 import { KeyStoreError } from "./errors.js"
 import { createKeyStore, type KeyStatus, type KeyStore } from "./key-store.js"
 import { readLastRotationDecision } from "./rotation-log.js"
@@ -229,7 +229,7 @@ function getStore(api: TuiPluginApi): KeyStore | undefined {
     api.ui.toast({ variant: "error", title: "Key rotator", message: "OpenCode runtime path is unavailable." })
     return undefined
   }
-  return createKeyStore(getOpencodeRuntimeDirs().dataDir)
+  return createKeyStore(resolveOpencodeDataDir(api.state.path))
 }
 
 function pad(value: string, width: number): string {

@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { applyEdits, getNodeValue, modify, parseTree, printParseErrorCode } from "jsonc-parser";
+import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 const PACKAGE_NAME = "opencode-key-rotator";
 const OPENCODE_SCHEMA_URL = "https://opencode.ai/config.json";
 const TUI_SCHEMA_URL = "https://opencode.ai/tui.json";
@@ -98,7 +99,7 @@ function resolveConfigDir(configDir) {
         return expandHome(configDir);
     if (process.env.OPENCODE_CONFIG_DIR)
         return expandHome(process.env.OPENCODE_CONFIG_DIR);
-    return path.join(os.homedir(), ".config", "opencode");
+    return getOpencodeRuntimeDirs().configDir;
 }
 function expandHome(value) {
     if (value === "~")

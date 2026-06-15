@@ -30,7 +30,7 @@ export function sanitizeMessage(message) {
         return undefined;
     return message
         .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
-        .replace(/(?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret)[=:]\s*[A-Za-z0-9._~+/=-]+/gi, "$1=[redacted]")
+        .replace(/(api[_-]?key|access[_-]?token|refresh[_-]?token|secret)[=:]\s*[A-Za-z0-9._~+/=-]+/gi, "$1=[redacted]")
         .slice(0, MAX_MESSAGE_LENGTH);
 }
 export function sanitizeRateLimitHeaders(headers) {

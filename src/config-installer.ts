@@ -2,6 +2,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { applyEdits, getNodeValue, modify, parseTree, printParseErrorCode, type ParseError } from "jsonc-parser"
+import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js"
 
 export type InstallerAction = "init" | "remove"
 
@@ -128,7 +129,7 @@ function writeTextAtomic(file: string, value: string): void {
 function resolveConfigDir(configDir: string | undefined): string {
   if (configDir) return expandHome(configDir)
   if (process.env.OPENCODE_CONFIG_DIR) return expandHome(process.env.OPENCODE_CONFIG_DIR)
-  return path.join(os.homedir(), ".config", "opencode")
+  return getOpencodeRuntimeDirs().configDir
 }
 
 function expandHome(value: string): string {

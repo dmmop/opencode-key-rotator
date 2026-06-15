@@ -28,9 +28,13 @@ function getEnvOrFallback(env, key, fallback) {
 export function getOpencodeRuntimeDirs(params) {
     const env = params?.env ?? process.env;
     const home = params?.homeDir ?? homedir();
-    const dataBase = getEnvOrFallback(env, "XDG_DATA_HOME", xdgData ?? join(home, ".local", "share"));
-    const configBase = getEnvOrFallback(env, "XDG_CONFIG_HOME", xdgConfig ?? join(home, ".config"));
-    const cacheBase = getEnvOrFallback(env, "XDG_CACHE_HOME", xdgCache ?? join(home, ".cache"));
+    const platform = params?.platform ?? process.platform;
+    const dataFallback = platform === "darwin" ? join(home, "Library", "Application Support") : join(home, ".local", "share");
+    const configFallback = platform === "darwin" ? join(home, "Library", "Application Support") : join(home, ".config");
+    const cacheFallback = platform === "darwin" ? join(home, "Library", "Caches") : join(home, ".cache");
+    const dataBase = getEnvOrFallback(env, "XDG_DATA_HOME", platform === "darwin" ? dataFallback : xdgData ?? dataFallback);
+    const configBase = getEnvOrFallback(env, "XDG_CONFIG_HOME", platform === "darwin" ? configFallback : xdgConfig ?? configFallback);
+    const cacheBase = getEnvOrFallback(env, "XDG_CACHE_HOME", platform === "darwin" ? cacheFallback : xdgCache ?? cacheFallback);
     const stateBase = getEnvOrFallback(env, "XDG_STATE_HOME", xdgState ?? join(home, ".local", "state"));
     return {
         dataDir: join(dataBase, "opencode"),
@@ -50,6 +54,12 @@ export function getAuthPaths() {
     const { dataDirs } = getOpencodeRuntimeDirCandidates();
     return dataDirs.map((directory) => join(directory, "auth.json"));
 }
+export function resolveOpencodeDataDir(pathInfo) {
+    if (isRecord(pathInfo) && typeof pathInfo.data === "string" && pathInfo.data.trim()) {
+        return pathInfo.data;
+    }
+    return getOpencodeRuntimeDirs().dataDir;
+}
 /**
  * Generate prioritized candidate directories for OpenCode runtime paths.
  *
@@ -61,7 +71,7 @@ export function getOpencodeRuntimeDirCandidates(params) {
     const platform = params?.platform ?? process.platform;
     const env = params?.env ?? process.env;
     const home = params?.homeDir ?? homedir();
-    const primary = params?.primary ?? getOpencodeRuntimeDirs({ env, homeDir: home });
+    const primary = params?.primary ?? getOpencodeRuntimeDirs({ env, homeDir: home, platform });
     const winAppData = env.APPDATA?.trim();
     const winLocalAppData = env.LOCALAPPDATA?.trim();
     const windowsRoamingFallback = join(home, "AppData", "Roaming");
@@ -99,5 +109,8 @@ export function getOpencodeRuntimeDirCandidates(params) {
         cacheDirs: dedupe(cacheDirs),
         stateDirs: dedupe(stateDirs),
     };
+}
+function isRecord(value) {
+    return typeof value === "object" && value !== null;
 }
 //# sourceMappingURL=opencode-runtime-paths.js.map

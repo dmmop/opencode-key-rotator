@@ -1,4 +1,4 @@
-import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
+import { resolveOpencodeDataDir } from "./opencode-runtime-paths.js";
 import { KeyStoreError } from "./errors.js";
 import { createKeyStore } from "./key-store.js";
 import { sanitizeMessage, sanitizeRateLimitHeaders, writeRotationLog } from "./rotation-log.js";
@@ -42,66 +42,24 @@ async function handleSessionNextRetried(client, properties) {
         return;
     if (wasRotatedRecently(sessionID))
         return;
-    const dataDir = await resolveDataDir(client);
-    if (!dataDir)
-        return;
-    const store = createKeyStore(dataDir);
     const timestamp = new Date().toISOString();
-    const inferred = await inferProvider(client, sessionID);
-    if (!inferred) {
-        writeRotationLog(store, {
-            timestamp,
-            message,
-            decision: "provider_unknown",
-            reason: "rotatable_retry_without_provider_id",
-        });
-        return;
-    }
-    if (!store.hasAlternativeKey(inferred.providerID)) {
-        writeRotationLog(store, {
-            timestamp,
-            providerID: inferred.providerID,
-            providerSource: inferred.source,
-            message,
-            decision: "no_alternative",
-            reason: "provider_has_less_than_two_saved_keys",
-        });
-        return;
-    }
-    try {
-        const result = store.rotateProviderKey(inferred.providerID);
-        if (!result)
-            return;
-        markRotated(sessionID);
-        writeRotationLog(store, {
-            timestamp,
-            providerID: inferred.providerID,
-            providerSource: inferred.source,
-            message,
-            decision: "rotated_on_retry",
-            reason: "matched_rotation_patterns",
-            activeAlias: result.previousAlias,
-            nextAlias: result.activeAlias,
-        });
-        await showToast(client, "Key rotated", `${inferred.providerID}: ${result.previousAlias ?? "unknown"} -> ${result.activeAlias}`, "success");
-    }
-    catch (rotationError) {
-        await logRotationError(client, store, inferred.providerID, inferred.source, message, timestamp, rotationError);
-    }
+    await rotateKeyForEvent(client, {
+        sessionID,
+        info: { message },
+        timestamp,
+        decision: "rotated_on_retry",
+        unknownProviderReason: "rotatable_retry_without_provider_id",
+        toastOnSkip: false,
+    });
 }
 async function handleSessionError(client, properties) {
     const error = properties?.error;
     const info = normalizeError(error);
     const timestamp = new Date().toISOString();
     const sessionID = typeof properties?.sessionID === "string" ? properties.sessionID : undefined;
-    const dataDir = await resolveDataDir(client);
-    if (!dataDir) {
+    const store = await createStoreForClient(client);
+    if (!store) {
         await showToast(client, "Key rotation skipped", "OpenCode data path is unavailable.", "warning");
-        return;
-    }
-    const store = createKeyStore(dataDir);
-    if (sessionID && wasRotatedRecently(sessionID)) {
-        // Already rotated during a retry; nothing more to do.
         return;
     }
     if (info.name === "MessageAbortedError") {
@@ -112,40 +70,61 @@ async function handleSessionError(client, properties) {
         writeRotationLog(store, { ...baseLogEntry(info, timestamp), decision: "not_rotatable", reason: "error_did_not_match_rotation_patterns" });
         return;
     }
-    if (!info.providerID) {
-        const inferred = await inferProvider(client, sessionID);
-        if (inferred) {
-            info.providerID = inferred.providerID;
-            info.providerSource = inferred.source;
-        }
-    }
-    if (!info.providerID) {
-        writeRotationLog(store, { ...baseLogEntry(info, timestamp), decision: "provider_unknown", reason: "rotatable_error_without_provider_id" });
-        await showToast(client, "Key rotation skipped", "Provider could not be determined.", "warning");
+    await rotateKeyForEvent(client, {
+        sessionID,
+        store,
+        info,
+        timestamp,
+        decision: "rotated",
+        unknownProviderReason: "rotatable_error_without_provider_id",
+        toastOnSkip: true,
+    });
+}
+async function rotateKeyForEvent(client, request) {
+    const store = request.store ?? await createStoreForClient(client);
+    if (!store) {
+        if (request.toastOnSkip)
+            await showToast(client, "Key rotation skipped", "OpenCode data path is unavailable.", "warning");
         return;
     }
-    if (!store.hasAlternativeKey(info.providerID)) {
-        writeRotationLog(store, { ...baseLogEntry(info, timestamp), decision: "no_alternative", reason: "provider_has_less_than_two_saved_keys" });
-        await showToast(client, "Key rotation skipped", `${info.providerID} has no alternative key.`, "warning");
+    if (request.sessionID && wasRotatedRecently(request.sessionID))
+        return;
+    if (!request.info.providerID) {
+        const inferred = await inferProvider(client, request.sessionID);
+        if (inferred) {
+            request.info.providerID = inferred.providerID;
+            request.info.providerSource = inferred.source;
+        }
+    }
+    if (!request.info.providerID) {
+        writeRotationLog(store, { ...baseLogEntry(request.info, request.timestamp), decision: "provider_unknown", reason: request.unknownProviderReason });
+        if (request.toastOnSkip)
+            await showToast(client, "Key rotation skipped", "Provider could not be determined.", "warning");
+        return;
+    }
+    if (!store.hasAlternativeKey(request.info.providerID)) {
+        writeRotationLog(store, { ...baseLogEntry(request.info, request.timestamp), decision: "no_alternative", reason: "provider_has_less_than_two_saved_keys" });
+        if (request.toastOnSkip)
+            await showToast(client, "Key rotation skipped", `${request.info.providerID} has no alternative key.`, "warning");
         return;
     }
     try {
-        const result = store.rotateProviderKey(info.providerID);
+        const result = store.rotateProviderKey(request.info.providerID);
         if (!result)
             return;
-        if (sessionID)
-            markRotated(sessionID);
+        if (request.sessionID)
+            markRotated(request.sessionID);
         writeRotationLog(store, {
-            ...baseLogEntry(info, timestamp),
-            decision: "rotated",
+            ...baseLogEntry(request.info, request.timestamp),
+            decision: request.decision,
             reason: "matched_rotation_patterns",
             activeAlias: result.previousAlias,
             nextAlias: result.activeAlias,
         });
-        await showToast(client, "Key rotated", `${info.providerID}: ${result.previousAlias ?? "unknown"} -> ${result.activeAlias}`, "success");
+        await showToast(client, "Key rotated", `${request.info.providerID}: ${result.previousAlias ?? "unknown"} -> ${result.activeAlias}`, "success");
     }
     catch (rotationError) {
-        await logRotationError(client, store, info.providerID, info.providerSource, info.message, timestamp, rotationError);
+        await logRotationError(client, store, request.info.providerID, request.info.providerSource, request.info.message, request.timestamp, rotationError);
     }
 }
 function baseLogEntry(info, timestamp) {
@@ -233,14 +212,12 @@ async function inferProviderFromConfig(client) {
         return undefined;
     }
 }
-async function resolveDataDir(client) {
+async function createStoreForClient(client) {
     try {
         const pathResponse = extractData(await client.path.get());
         if (!isRecord(pathResponse) || typeof pathResponse.state !== "string")
             return undefined;
-        // Validate that OpenCode runtime paths are available, then derive the data
-        // directory using the same XDG logic OpenCode uses.
-        return getOpencodeRuntimeDirs().dataDir;
+        return createKeyStore(resolveOpencodeDataDir(pathResponse));
     }
     catch {
         return undefined;

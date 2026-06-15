@@ -46,6 +46,25 @@ test("remove deletes only the target plugin and removes empty plugin property", 
   assert.doesNotMatch(fs.readFileSync(tuiFile, "utf8"), /"plugin"/)
 })
 
+test("default config directory follows XDG_CONFIG_HOME", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-key-rotator-xdg-"))
+  const previous = process.env.XDG_CONFIG_HOME
+  process.env.XDG_CONFIG_HOME = base
+  try {
+    const results = updateOpenCodeConfigs({ action: "init", spec: "opencode-key-rotator" })
+    assert.deepEqual(results.map((result) => result.path), [
+      path.join(base, "opencode", "opencode.json"),
+      path.join(base, "opencode", "tui.json"),
+    ])
+  } finally {
+    if (previous === undefined) {
+      delete process.env.XDG_CONFIG_HOME
+    } else {
+      process.env.XDG_CONFIG_HOME = previous
+    }
+  }
+})
+
 function tempConfigDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "opencode-key-rotator-config-"))
 }

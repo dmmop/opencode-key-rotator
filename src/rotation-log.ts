@@ -5,6 +5,9 @@ export type RotationDecision = "rotated" | "rotated_on_retry" | "not_rotatable" 
 
 export type RotationLogEntry = {
   timestamp: string
+  sessionID?: string
+  attempt?: number
+  isRetryable?: boolean
   providerID?: string
   providerSource?: string
   errorName?: string
@@ -46,7 +49,7 @@ export function sanitizeMessage(message: string | undefined): string | undefined
   if (!message) return undefined
   return message
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
-    .replace(/(?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret)[=:]\s*[A-Za-z0-9._~+/=-]+/gi, "$1=[redacted]")
+    .replace(/(api[_-]?key|access[_-]?token|refresh[_-]?token|secret)[=:]\s*[A-Za-z0-9._~+/=-]+/gi, "$1=[redacted]")
     .slice(0, MAX_MESSAGE_LENGTH)
 }
 
