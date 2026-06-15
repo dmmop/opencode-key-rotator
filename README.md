@@ -172,7 +172,7 @@ A maintainer can trigger a fully automated release from GitHub Actions:
    - Bump the version in `package.json`
    - Create and push a Git tag
    - Create a GitHub Release with auto-generated notes
-   - Trigger the **Publish to npm** workflow via Trusted Publishing
+   - Publish the package to npm via Trusted Publishing
 
 ## License
 

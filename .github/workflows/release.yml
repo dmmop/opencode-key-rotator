@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   release:
@@ -45,3 +46,5 @@ jobs:
         run: |
           version=$(node -p "require('./package.json').version")
           gh release create "v${version}" --generate-notes --title "v${version}"
+      - name: Publish to npm
+        run: npm publish --provenance --access public
