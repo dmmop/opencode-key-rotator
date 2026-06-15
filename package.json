@@ -1,6 +1,6 @@
 {
   "name": "opencode-key-rotator",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Reactive OpenCode plugin that automatically rotates provider API keys on rate limits and quota errors, with built-in TUI key management.",
   "author": "dmmop <2412013-dmmop@users.noreply.gitlab.com>",
   "license": "MIT",
