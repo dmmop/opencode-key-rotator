@@ -22,13 +22,14 @@ Automatically swaps to the next saved key when OpenCode encounters rate limits (
 ## Installation
 
 ```bash
-npm install -g opencode-key-rotator
+npx -y opencode-key-rotator init
 ```
 
-Or use directly with `npx`:
+Or install it globally:
 
 ```bash
-npx opencode-key-rotator init
+npm install -g opencode-key-rotator
+opencode-key-rotator init
 ```
 
 ## Setup
@@ -91,17 +92,7 @@ Create a sidecar config file at `~/.config/opencode/opencode-key-rotator/config.
   "rotation": {
     "enabled": true,
     "dedupTtlMs": 300000,
-    "patterns": [
-      "\\b429\\b",
-      "rate\\s*limit",
-      "too many requests",
-      "quota",
-      "resource exhausted",
-      "usage limit",
-      "requests per minute",
-      "tokens per minute",
-      "insufficient quota"
-    ]
+    "patterns": ["\\b429\\b", "rate\\s*limit", "quota", "resource exhausted", "usage limit", "insufficient quota"]
   },
   "storage": {
     "maxBackups": 10,
@@ -115,9 +106,8 @@ Create a sidecar config file at `~/.config/opencode/opencode-key-rotator/config.
 
 The config file supports JSONC (comments and trailing commas). Resolution order:
 
-1. `OPENCODE_KEY_ROTATOR_CONFIG` environment variable
-2. `${configDir}/opencode-key-rotator/config.json`
-3. Built-in defaults
+1. `${configDir}/opencode-key-rotator/config.json`
+2. Built-in defaults
 
 ## How rotation works
 

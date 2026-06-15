@@ -98,7 +98,7 @@ test("session.error with statusCode 429 rotates key", async () => {
       type: "session.error",
       properties: {
         sessionID: "session-2",
-        error: { name: "ProviderError", data: { providerID: "openai", statusCode: 429, message: "too many requests" } },
+        error: { name: "ProviderError", data: { providerID: "openai", statusCode: 429, message: "rate limit" } },
       },
     },
   });

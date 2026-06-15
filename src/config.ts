@@ -18,17 +18,7 @@ export type KeyRotatorConfig = {
   };
 };
 
-export const DEFAULT_ROTATION_PATTERNS = [
-  "\\b429\\b",
-  "rate\\s*limit",
-  "too many requests",
-  "quota",
-  "resource exhausted",
-  "usage limit",
-  "requests per minute",
-  "tokens per minute",
-  "insufficient quota",
-];
+export const DEFAULT_ROTATION_PATTERNS = ["\\b429\\b", "rate\\s*limit", "quota", "resource exhausted", "usage limit", "insufficient quota"];
 
 const DEFAULT_CONFIG: KeyRotatorConfig = {
   rotation: {
@@ -86,7 +76,6 @@ export function writeDefaultConfig(configDir: string): string {
 
 function resolveConfigPath(options?: ConfigLoadOptions): string | undefined {
   if (options?.configPath) return path.resolve(options.configPath);
-  if (process.env.OPENCODE_KEY_ROTATOR_CONFIG) return path.resolve(process.env.OPENCODE_KEY_ROTATOR_CONFIG);
   const configDir = options?.configDir ?? getOpencodeRuntimeDirs().configDir;
   return path.join(configDir, "opencode-key-rotator", "config.json");
 }

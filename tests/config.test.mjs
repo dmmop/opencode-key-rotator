@@ -55,18 +55,6 @@ test("loadConfig parses custom rotation patterns", () => {
   assert.equal(config.rotation.patterns[0].test("CUSTOM PATTERN"), true);
 });
 
-test("loadConfig respects OPENCODE_KEY_ROTATOR_CONFIG env var", () => {
-  const configFile = path.join(os.tmpdir(), `key-rotator-config-${Date.now()}.json`);
-  writeJson(configFile, { rotation: { enabled: false } });
-  process.env.OPENCODE_KEY_ROTATOR_CONFIG = configFile;
-
-  const config = loadConfig();
-  assert.equal(config.rotation.enabled, false);
-
-  delete process.env.OPENCODE_KEY_ROTATOR_CONFIG;
-  fs.rmSync(configFile);
-});
-
 test("loadConfig supports JSONC comments and trailing commas", () => {
   const configDir = tempConfigDir();
   fs.mkdirSync(path.join(configDir, "opencode-key-rotator"), { recursive: true });
