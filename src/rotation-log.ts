@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import type { KeyStore } from "./key-store.js"
 
-export type RotationDecision = "rotated" | "not_rotatable" | "no_alternative" | "provider_unknown" | "ignored" | "error" | "fingerprint_mismatch"
+export type RotationDecision = "rotated" | "rotated_on_retry" | "not_rotatable" | "no_alternative" | "provider_unknown" | "ignored" | "error" | "fingerprint_mismatch"
 
 export type RotationLogEntry = {
   timestamp: string

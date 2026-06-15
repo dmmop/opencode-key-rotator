@@ -32,78 +32,158 @@ const ROTATABLE_MESSAGE_PATTERNS = [
   /insufficient quota/i,
 ]
 
+const ROTATION_DEDUP_TTL_MS = 5 * 60 * 1000
+
+// Track sessions for which we have already rotated a key, so we do not rotate
+// again when the final session.error arrives after retries.
+const rotatedSessions = new Map<string, number>()
+
 export const server: Plugin = async ({ client }) => {
   return {
     event: async ({ event }) => {
-      if (event.type !== "session.error") return
+      const genericEvent = event as { type: string; properties?: Record<string, unknown> }
 
-      const error = event.properties?.error
-      const info = normalizeError(error)
-      const timestamp = new Date().toISOString()
-
-      const dataDir = await resolveDataDir(client)
-      if (!dataDir) {
-        await showToast(client, "Key rotation skipped", "OpenCode data path is unavailable.", "warning")
-        return
-      }
-      const store = createKeyStore(dataDir)
-
-      if (info.name === "MessageAbortedError") {
-        writeRotationLog(store, { ...baseLogEntry(info, timestamp), decision: "ignored", reason: "manual_abort" })
+      if (genericEvent.type === "session.next.retried") {
+        await handleSessionNextRetried(client, genericEvent.properties)
         return
       }
 
-      if (!isRotatableError(info)) {
-        writeRotationLog(store, { ...baseLogEntry(info, timestamp), decision: "not_rotatable", reason: "error_did_not_match_rotation_patterns" })
-        return
-      }
+      if (genericEvent.type !== "session.error") return
 
-      if (!info.providerID) {
-        const inferred = await inferProvider(client, event.properties?.sessionID)
-        if (inferred) {
-          info.providerID = inferred.providerID
-          info.providerSource = inferred.source
-        }
-      }
-
-      if (!info.providerID) {
-        writeRotationLog(store, { ...baseLogEntry(info, timestamp), decision: "provider_unknown", reason: "rotatable_error_without_provider_id" })
-        await showToast(client, "Key rotation skipped", "Provider could not be determined.", "warning")
-        return
-      }
-
-      if (!store.hasAlternativeKey(info.providerID)) {
-        writeRotationLog(store, { ...baseLogEntry(info, timestamp), decision: "no_alternative", reason: "provider_has_less_than_two_saved_keys" })
-        await showToast(client, "Key rotation skipped", `${info.providerID} has no alternative key.`, "warning")
-        return
-      }
-
-      try {
-        const result = store.rotateProviderKey(info.providerID)
-        if (!result) return
-
-        writeRotationLog(store, {
-          ...baseLogEntry(info, timestamp),
-          decision: "rotated",
-          reason: "matched_rotation_patterns",
-          activeAlias: result.previousAlias,
-          nextAlias: result.activeAlias,
-        })
-        await showToast(client, "Key rotated", `${info.providerID}: ${result.previousAlias ?? "unknown"} -> ${result.activeAlias}`, "success")
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        const activeAlias = readActiveAliasSafely(store, info.providerID)
-        const fingerprintMismatch = message.includes("no longer match alias")
-        writeRotationLog(store, {
-          ...baseLogEntry(info, timestamp),
-          message: `${info.message ?? ""}\nrotation_error=${message}`,
-          decision: fingerprintMismatch ? "fingerprint_mismatch" : "error",
-          reason: fingerprintMismatch ? "active_credentials_changed_outside_plugin" : error instanceof KeyStoreError ? "key_store_error" : "unexpected_rotation_error",
-          activeAlias,
-        })
-        await showToast(client, "Key rotation failed", sanitizeMessage(message) ?? "Unknown error", "error")
-      }
+      await handleSessionError(client, genericEvent.properties)
     },
+  }
+}
+
+async function handleSessionNextRetried(
+  client: Parameters<Plugin>[0]["client"],
+  properties: Record<string, unknown> | undefined,
+): Promise<void> {
+  const sessionID = typeof properties?.sessionID === "string" ? properties.sessionID : undefined
+  const attempt = typeof properties?.attempt === "number" ? properties.attempt : undefined
+  const error = properties?.error
+  const message = isRecord(error) && typeof error.message === "string" ? error.message : undefined
+
+  if (!sessionID || attempt !== 1) return
+  if (!message || !isRotatableMessage(message)) return
+  if (wasRotatedRecently(sessionID)) return
+
+  const dataDir = await resolveDataDir(client)
+  if (!dataDir) return
+  const store = createKeyStore(dataDir)
+  const timestamp = new Date().toISOString()
+
+  const inferred = await inferProvider(client, sessionID)
+  if (!inferred) {
+    writeRotationLog(store, {
+      timestamp,
+      message,
+      decision: "provider_unknown",
+      reason: "rotatable_retry_without_provider_id",
+    })
+    return
+  }
+
+  if (!store.hasAlternativeKey(inferred.providerID)) {
+    writeRotationLog(store, {
+      timestamp,
+      providerID: inferred.providerID,
+      providerSource: inferred.source,
+      message,
+      decision: "no_alternative",
+      reason: "provider_has_less_than_two_saved_keys",
+    })
+    return
+  }
+
+  try {
+    const result = store.rotateProviderKey(inferred.providerID)
+    if (!result) return
+
+    markRotated(sessionID)
+    writeRotationLog(store, {
+      timestamp,
+      providerID: inferred.providerID,
+      providerSource: inferred.source,
+      message,
+      decision: "rotated_on_retry",
+      reason: "matched_rotation_patterns",
+      activeAlias: result.previousAlias,
+      nextAlias: result.activeAlias,
+    })
+    await showToast(client, "Key rotated", `${inferred.providerID}: ${result.previousAlias ?? "unknown"} -> ${result.activeAlias}`, "success")
+  } catch (rotationError) {
+    await logRotationError(client, store, inferred.providerID, inferred.source, message, timestamp, rotationError)
+  }
+}
+
+
+async function handleSessionError(
+  client: Parameters<Plugin>[0]["client"],
+  properties: Record<string, unknown> | undefined,
+): Promise<void> {
+  const error = properties?.error
+  const info = normalizeError(error)
+  const timestamp = new Date().toISOString()
+  const sessionID = typeof properties?.sessionID === "string" ? properties.sessionID : undefined
+
+  const dataDir = await resolveDataDir(client)
+  if (!dataDir) {
+    await showToast(client, "Key rotation skipped", "OpenCode data path is unavailable.", "warning")
+    return
+  }
+  const store = createKeyStore(dataDir)
+
+  if (sessionID && wasRotatedRecently(sessionID)) {
+    // Already rotated during a retry; nothing more to do.
+    return
+  }
+
+  if (info.name === "MessageAbortedError") {
+    writeRotationLog(store, { ...baseLogEntry(info, timestamp), decision: "ignored", reason: "manual_abort" })
+    return
+  }
+
+  if (!isRotatableError(info)) {
+    writeRotationLog(store, { ...baseLogEntry(info, timestamp), decision: "not_rotatable", reason: "error_did_not_match_rotation_patterns" })
+    return
+  }
+
+  if (!info.providerID) {
+    const inferred = await inferProvider(client, sessionID)
+    if (inferred) {
+      info.providerID = inferred.providerID
+      info.providerSource = inferred.source
+    }
+  }
+
+  if (!info.providerID) {
+    writeRotationLog(store, { ...baseLogEntry(info, timestamp), decision: "provider_unknown", reason: "rotatable_error_without_provider_id" })
+    await showToast(client, "Key rotation skipped", "Provider could not be determined.", "warning")
+    return
+  }
+
+  if (!store.hasAlternativeKey(info.providerID)) {
+    writeRotationLog(store, { ...baseLogEntry(info, timestamp), decision: "no_alternative", reason: "provider_has_less_than_two_saved_keys" })
+    await showToast(client, "Key rotation skipped", `${info.providerID} has no alternative key.`, "warning")
+    return
+  }
+
+  try {
+    const result = store.rotateProviderKey(info.providerID)
+    if (!result) return
+
+    if (sessionID) markRotated(sessionID)
+    writeRotationLog(store, {
+      ...baseLogEntry(info, timestamp),
+      decision: "rotated",
+      reason: "matched_rotation_patterns",
+      activeAlias: result.previousAlias,
+      nextAlias: result.activeAlias,
+    })
+    await showToast(client, "Key rotated", `${info.providerID}: ${result.previousAlias ?? "unknown"} -> ${result.activeAlias}`, "success")
+  } catch (rotationError) {
+    await logRotationError(client, store, info.providerID, info.providerSource, info.message, timestamp, rotationError)
   }
 }
 
@@ -117,6 +197,30 @@ function baseLogEntry(info: ErrorInfo, timestamp: string): Omit<RotationLogEntry
     message: info.message,
     rateLimitHeaders: sanitizeRateLimitHeaders(info.headers),
   }
+}
+
+async function logRotationError(
+  client: Parameters<Plugin>[0]["client"],
+  store: KeyStore,
+  providerID: string,
+  providerSource: ProviderSource | undefined,
+  message: string | undefined,
+  timestamp: string,
+  rotationError: unknown,
+): Promise<void> {
+  const errorMessage = rotationError instanceof Error ? rotationError.message : String(rotationError)
+  const activeAlias = readActiveAliasSafely(store, providerID)
+  const fingerprintMismatch = errorMessage.includes("no longer match alias")
+  writeRotationLog(store, {
+    timestamp,
+    providerID,
+    providerSource,
+    message: `${message ?? ""}\nrotation_error=${errorMessage}`,
+    decision: fingerprintMismatch ? "fingerprint_mismatch" : "error",
+    reason: fingerprintMismatch ? "active_credentials_changed_outside_plugin" : rotationError instanceof KeyStoreError ? "key_store_error" : "unexpected_rotation_error",
+    activeAlias,
+  })
+  await showToast(client, "Key rotation failed", sanitizeMessage(errorMessage) ?? "Unknown error", "error")
 }
 
 function normalizeError(error: unknown): ErrorInfo {
@@ -213,7 +317,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isRotatableError(info: ErrorInfo): boolean {
   if (info.name === "MessageOutputLengthError") return false
   if (info.statusCode === 429) return true
-  const message = info.message ?? ""
+  return isRotatableMessage(info.message)
+}
+
+function isRotatableMessage(message: string | undefined): boolean {
+  if (!message) return false
   return ROTATABLE_MESSAGE_PATTERNS.some((pattern) => pattern.test(message))
 }
 
@@ -238,5 +346,28 @@ async function showToast(
     })
   } catch {
     console.warn(`[opencode-key-rotator] ${title}: ${message}`)
+  }
+}
+
+function markRotated(sessionID: string): void {
+  rotatedSessions.set(sessionID, Date.now())
+  cleanupRotatedSessions()
+}
+
+function wasRotatedRecently(sessionID: string | undefined): boolean {
+  if (!sessionID) return false
+  const timestamp = rotatedSessions.get(sessionID)
+  if (!timestamp) return false
+  if (Date.now() - timestamp > ROTATION_DEDUP_TTL_MS) {
+    rotatedSessions.delete(sessionID)
+    return false
+  }
+  return true
+}
+
+function cleanupRotatedSessions(): void {
+  const now = Date.now()
+  for (const [sessionID, timestamp] of rotatedSessions) {
+    if (now - timestamp > ROTATION_DEDUP_TTL_MS) rotatedSessions.delete(sessionID)
   }
 }
