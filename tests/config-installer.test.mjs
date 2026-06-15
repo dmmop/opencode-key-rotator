@@ -63,7 +63,11 @@ test("default config directory follows XDG_CONFIG_HOME", () => {
     const results = updateOpenCodeConfigs({ action: "init", spec: "opencode-key-rotator" });
     assert.deepEqual(
       results.map((result) => result.path),
-      [path.join(base, "opencode", "opencode.json"), path.join(base, "opencode", "tui.json")],
+      [
+        path.join(base, "opencode", "opencode.json"),
+        path.join(base, "opencode", "tui.json"),
+        path.join(base, "opencode", "opencode-key-rotator", "config.json"),
+      ],
     );
   } finally {
     if (previous === undefined) {

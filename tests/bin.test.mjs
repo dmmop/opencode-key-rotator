@@ -3,9 +3,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-const BIN_PATH = path.resolve(import.meta.dirname, "../dist/bin.js");
+const BIN_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/bin.js");
 
 function tempConfigDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "opencode-key-rotator-config-"));
@@ -24,7 +25,7 @@ function runBin(args, env = {}) {
   };
 }
 
-test("init creates opencode.json and tui.json when missing", () => {
+test("init creates opencode.json, tui.json, and key-rotator config when missing", () => {
   const configDir = tempConfigDir();
   const { stdout, exitCode } = runBin(["init"], { OPENCODE_CONFIG_DIR: configDir });
 
@@ -32,6 +33,11 @@ test("init creates opencode.json and tui.json when missing", () => {
   assert.match(stdout, /Added/);
   assert.equal(fs.existsSync(path.join(configDir, "opencode.json")), true);
   assert.equal(fs.existsSync(path.join(configDir, "tui.json")), true);
+
+  const keyRotatorConfigFile = path.join(configDir, "opencode-key-rotator", "config.json");
+  assert.equal(fs.existsSync(keyRotatorConfigFile), true);
+  const keyRotatorConfig = JSON.parse(fs.readFileSync(keyRotatorConfigFile, "utf8"));
+  assert.equal(keyRotatorConfig.ui.toastDurationMs, 11_000);
 
   const opencodeConfig = JSON.parse(fs.readFileSync(path.join(configDir, "opencode.json"), "utf8"));
   assert.ok(opencodeConfig.plugin.includes("opencode-key-rotator"));

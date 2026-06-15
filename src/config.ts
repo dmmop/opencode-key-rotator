@@ -41,7 +41,7 @@ const DEFAULT_CONFIG: KeyRotatorConfig = {
     lockTtlMs: 30_000,
   },
   ui: {
-    toastDurationMs: 8_000,
+    toastDurationMs: 11_000,
   },
 };
 
@@ -58,6 +58,30 @@ export function loadConfig(options?: ConfigLoadOptions): KeyRotatorConfig {
 
   const raw = parseConfigFile(configPath);
   return mergeConfig(raw);
+}
+
+export function writeDefaultConfig(configDir: string): string {
+  const configDirPath = path.join(configDir, "opencode-key-rotator");
+  const configFile = path.join(configDirPath, "config.json");
+  fs.mkdirSync(configDirPath, { recursive: true });
+
+  const defaultConfig = {
+    rotation: {
+      enabled: DEFAULT_CONFIG.rotation.enabled,
+      dedupTtlMs: DEFAULT_CONFIG.rotation.dedupTtlMs,
+      patterns: DEFAULT_ROTATION_PATTERNS,
+    },
+    storage: {
+      maxBackups: DEFAULT_CONFIG.storage.maxBackups,
+      lockTtlMs: DEFAULT_CONFIG.storage.lockTtlMs,
+    },
+    ui: {
+      toastDurationMs: DEFAULT_CONFIG.ui.toastDurationMs,
+    },
+  };
+
+  fs.writeFileSync(configFile, `${JSON.stringify(defaultConfig, null, 2)}\n`, { mode: 0o600 });
+  return configFile;
 }
 
 function resolveConfigPath(options?: ConfigLoadOptions): string | undefined {

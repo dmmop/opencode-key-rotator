@@ -26,7 +26,7 @@ test("loadConfig returns defaults when config file does not exist", () => {
   assert.equal(config.rotation.dedupTtlMs, 5 * 60 * 1000);
   assert.equal(config.storage.maxBackups, 10);
   assert.equal(config.storage.lockTtlMs, 30_000);
-  assert.equal(config.ui.toastDurationMs, 8_000);
+  assert.equal(config.ui.toastDurationMs, 11_000);
   assert.equal(config.rotation.patterns.length, DEFAULT_ROTATION_PATTERNS.length);
 });
 

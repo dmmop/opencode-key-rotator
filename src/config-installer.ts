@@ -3,11 +3,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { applyEdits, getNodeValue, modify, parseTree, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
+import { writeDefaultConfig } from "./config.js";
 
 export type InstallerAction = "init" | "remove";
 
 export type ConfigEditResult = {
-  kind: "opencode" | "tui";
+  kind: "opencode" | "tui" | "key-rotator";
   path: string;
   existed: boolean;
   changed: boolean;
@@ -29,7 +30,7 @@ export function updateOpenCodeConfigs(options: InstallOptions): ConfigEditResult
   const configDir = resolveConfigDir(options.configDir);
   fs.mkdirSync(configDir, { recursive: true });
 
-  return [
+  const results: ConfigEditResult[] = [
     updateConfigFile({
       kind: "opencode",
       file: path.join(configDir, "opencode.json"),
@@ -45,6 +46,21 @@ export function updateOpenCodeConfigs(options: InstallOptions): ConfigEditResult
       action: options.action,
     }),
   ];
+
+  if (options.action === "init") {
+    const keyRotatorConfigFile = path.join(configDir, "opencode-key-rotator", "config.json");
+    const existed = fs.existsSync(keyRotatorConfigFile);
+    writeDefaultConfig(configDir);
+    results.push({
+      kind: "key-rotator",
+      path: keyRotatorConfigFile,
+      existed,
+      changed: true,
+      message: existed ? "Updated key-rotator config with defaults" : "Created default key-rotator config",
+    });
+  }
+
+  return results;
 }
 
 export function defaultPluginSpec(): string {
