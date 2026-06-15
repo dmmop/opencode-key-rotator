@@ -72,6 +72,19 @@ function lastLogEntry(dataDir) {
   return JSON.parse(logLines[logLines.length - 1]);
 }
 
+test("server initialization falls back when path lookup hangs", async () => {
+  const { dataDir } = tempDataDir();
+  const client = createMockClient(dataDir, {
+    path: { get: async () => new Promise(() => {}) },
+  });
+
+  const start = Date.now();
+  const plugin = await server({ client });
+
+  assert.equal(typeof plugin.event, "function");
+  assert.ok(Date.now() - start < 1_500);
+});
+
 test("session.next.retried with attempt=1 and rotatable message rotates key", async () => {
   const { dataDir } = tempDataDir();
   setupStore(dataDir, "openai");

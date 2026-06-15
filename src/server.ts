@@ -34,6 +34,7 @@ type RotationRequest = {
 // Track sessions for which we have already rotated a key, so we do not rotate
 // again when the final session.error arrives after retries.
 const rotatedSessions = new Map<string, number>();
+const CLIENT_CALL_TIMEOUT_MS = 1_000;
 
 export const server: Plugin = async ({ client }) => {
   const config = await loadConfigForClient(client);
@@ -307,7 +308,7 @@ async function inferProviderFromConfig(client: Parameters<Plugin>[0]["client"]):
 
 async function loadConfigForClient(client: Parameters<Plugin>[0]["client"]): Promise<KeyRotatorConfig> {
   try {
-    const pathResponse = extractData(await client.path.get());
+    const pathResponse = extractData(await withTimeout(client.path.get(), CLIENT_CALL_TIMEOUT_MS));
     const configDir = isRecord(pathResponse) && typeof pathResponse.config === "string" ? pathResponse.config : undefined;
     return loadConfig(configDir ? { configDir } : undefined);
   } catch {
@@ -317,11 +318,25 @@ async function loadConfigForClient(client: Parameters<Plugin>[0]["client"]): Pro
 
 async function createStoreForClient(client: Parameters<Plugin>[0]["client"], config: KeyRotatorConfig): Promise<KeyStore | undefined> {
   try {
-    const pathResponse = extractData(await client.path.get());
+    const pathResponse = extractData(await withTimeout(client.path.get(), CLIENT_CALL_TIMEOUT_MS));
     if (!isRecord(pathResponse) || typeof pathResponse.state !== "string") return undefined;
     return createKeyStore(resolveOpencodeDataDir(pathResponse), config);
   } catch {
     return undefined;
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("client call timed out")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
