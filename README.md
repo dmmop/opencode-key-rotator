@@ -161,6 +161,19 @@ npm test
 npm run format
 ```
 
+## Releasing
+
+A maintainer can trigger a fully automated release from GitHub Actions:
+
+1. Go to **Actions** → **Release** → **Run workflow**
+2. Choose `patch`, `minor`, or `major`
+3. The workflow will:
+   - Run the full test suite
+   - Bump the version in `package.json`
+   - Create and push a Git tag
+   - Create a GitHub Release with auto-generated notes
+   - Trigger the **Publish to npm** workflow via Trusted Publishing
+
 ## License
 
 MIT
