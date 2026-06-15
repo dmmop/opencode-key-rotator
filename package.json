@@ -44,7 +44,9 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test tests/*.test.mjs"
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "publish:staging": "npm publish --tag=staging",
+    "promote:latest": "npm dist-tag add opencode-key-rotator@$npm_package_version latest"
   },
   "dependencies": {
     "@opencode-ai/plugin": "^1.17.6",
