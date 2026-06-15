@@ -1,13 +1,15 @@
 {
   "name": "opencode-key-rotator",
   "version": "0.1.1",
-  "description": "Reactive OpenCode provider credential rotation with TUI key management.",
+  "description": "Reactive OpenCode plugin that automatically rotates provider API keys on rate limits and quota errors, with built-in TUI key management.",
   "author": "dmmop <2412013-dmmop@users.noreply.gitlab.com>",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dmmop/opencode-key-rotator.git"
   },
+  "homepage": "https://github.com/dmmop/opencode-key-rotator#readme",
+  "bugs": "https://github.com/dmmop/opencode-key-rotator/issues",
   "keywords": [
     "opencode",
     "key-rotation",
@@ -39,12 +41,17 @@
     "tui"
   ],
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test tests/*.test.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "publish:staging": "npm publish --tag=staging",
     "promote:latest": "npm dist-tag add opencode-key-rotator@$npm_package_version latest"
   },
@@ -55,6 +62,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "prettier": "^3.6.0",
     "typescript": "^5.8.0"
   },
   "peerDependencies": {

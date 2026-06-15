@@ -1,8 +1,14 @@
 # opencode-key-rotator
 
-Reactive OpenCode provider credential rotation with TUI key management.
+[![npm version](https://img.shields.io/npm/v/opencode-key-rotator)](https://www.npmjs.com/package/opencode-key-rotator)
+[![npm downloads](https://img.shields.io/npm/dm/opencode-key-rotator)](https://www.npmjs.com/package/opencode-key-rotator)
+[![CI](https://github.com/dmmop/opencode-key-rotator/actions/workflows/ci.yml/badge.svg)](https://github.com/dmmop/opencode-key-rotator/actions/workflows/ci.yml)
+[![code style: prettier](https://img.shields.io/badge/code_style-prettier-ff69b4.svg)](https://prettier.io)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Automatically rotates provider API keys when OpenCode encounters rate limits (429), quota exhaustion, or auth errors during sessions.
+Reactive OpenCode plugin that automatically rotates provider API keys on rate limits and quota errors, with built-in TUI key management.
+
+Automatically swaps to the next saved key when OpenCode encounters rate limits (429), quota exhaustion, or auth errors during sessions.
 
 ## Features
 
@@ -10,6 +16,8 @@ Automatically rotates provider API keys when OpenCode encounters rate limits (42
 - **TUI key manager** — interactive terminal UI to manage provider keys with masked values and per-provider grouping
 - **OpenCode plugin** — integrates as a server plugin with no manual setup after initial configuration
 - **Persistent storage** — keys and rotation logs stored in the XDG data directory
+- **Configurable** — customize rotation patterns, dedup window, backups, and toast duration via sidecar config
+- **Secure** — atomic writes, restrictive permissions, and log sanitization for credentials
 
 ## Installation
 
@@ -44,10 +52,10 @@ Add the plugin to your OpenCode `opencode.jsonc` config:
       "from": "opencode-key-rotator",
       "params": {
         "server": true,
-        "tui": true
-      }
-    }
-  ]
+        "tui": true,
+      },
+    },
+  ],
 }
 ```
 
@@ -59,23 +67,98 @@ opencode-key-rotator remove
 
 Saved keys and rotation logs are preserved on removal.
 
-## Usage
-
-1. Start OpenCode — the plugin runs automatically on the server side
-2. Use the TUI to add provider keys:
-   - Open a terminal and run the TUI from OpenCode's command palette
-   - Set one or more keys per provider
-   - Mark keys as primary or secondary fallbacks
-3. When a provider returns a 429, rate-limit, or auth error during a session:
-   - The plugin logs the error details
-   - On retry, the next key is automatically rotated in
-   - All rotation events are recorded in the rotation log
-
 ## CLI
 
 ```
 opencode-key-rotator init [--spec <plugin-spec>] [--config-dir <dir>]
 opencode-key-rotator remove [--spec <plugin-spec>] [--config-dir <dir>]
+```
+
+## TUI Commands
+
+| Command       | Description                                            |
+| ------------- | ------------------------------------------------------ |
+| `/key-save`   | Save the current provider credentials as a named alias |
+| `/key-switch` | Switch the active key to another saved alias           |
+| `/key-status` | Show provider statuses and the last rotation event     |
+
+## Configuration
+
+Create a sidecar config file at `~/.config/opencode/opencode-key-rotator/config.json`:
+
+```json
+{
+  "rotation": {
+    "enabled": true,
+    "dedupTtlMs": 300000,
+    "patterns": [
+      "\\b429\\b",
+      "rate\\s*limit",
+      "too many requests",
+      "quota",
+      "resource exhausted",
+      "usage limit",
+      "requests per minute",
+      "tokens per minute",
+      "insufficient quota"
+    ]
+  },
+  "storage": {
+    "maxBackups": 10,
+    "lockTtlMs": 30000
+  },
+  "ui": {
+    "toastDurationMs": 8000
+  }
+}
+```
+
+The config file supports JSONC (comments and trailing commas). Resolution order:
+
+1. `OPENCODE_KEY_ROTATOR_CONFIG` environment variable
+2. `${configDir}/opencode-key-rotator/config.json`
+3. Built-in defaults
+
+## How rotation works
+
+1. OpenCode emits `session.next.retried` when a request is retried. The plugin rotates on `attempt === 1` if the error message matches the configured patterns.
+2. If rotation did not happen early, `session.error` acts as a fallback. The plugin rotates on HTTP 429 or matching messages.
+3. The provider is inferred from session messages first, then from the configured model.
+4. If at least two keys are saved for the provider, the plugin switches to the next alias in a round-robin cycle.
+5. Before switching, the current credentials are saved under the previous alias so you can roll back.
+6. Every decision is recorded in `~/.local/share/opencode/keys/rotation.log.jsonl`.
+
+## Data layout
+
+```
+~/.local/share/opencode/
+  auth.json                        # Active OpenCode credentials
+  keys/
+    active.json                    # Active alias metadata per provider
+    rotation.log.jsonl             # Rotation decisions (JSON Lines)
+    .lock                          # Concurrency lock file
+    backups/                       # auth.json backups before rotation
+    <providerID>/                  # e.g. openai/, anthropic/
+      <alias>.json                 # Saved credential snapshots
+```
+
+## Troubleshooting
+
+| Symptom                                          | Cause                                                                               | Fix                                             |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `AUTH_MISSING` error                             | `auth.json` does not exist                                                          | Run `/connect` in OpenCode and then `/key-save` |
+| `active credentials changed outside key rotator` | The provider credentials in `auth.json` no longer match the saved alias fingerprint | Re-run `/key-save` for the active alias         |
+| `Provider unknown`                               | The plugin could not infer the provider from session messages or config             | Ensure the model is set (e.g. `openai/gpt-4`)   |
+| `No fallback key`                                | Only one key is saved for the provider                                              | Save at least two aliases with `/key-save`      |
+
+## Development
+
+```bash
+npm install
+npm run typecheck
+npm run build
+npm test
+npm run format
 ```
 
 ## License

@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a bug in opencode-key-rotator
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: What version of opencode-key-rotator are you using?
+      placeholder: "0.1.1"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Ubuntu 24.04 / macOS 15 / Windows 11"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide a minimal set of steps to reproduce the issue.
+      placeholder: |
+        1. Run /key-save
+        2. Trigger rate limit
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste relevant output from OpenCode or `~/.local/share/opencode/keys/rotation.log.jsonl`.
+      render: text

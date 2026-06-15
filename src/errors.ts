@@ -5,11 +5,14 @@ export type KeyStoreErrorCode =
   | "AUTH_INVALID"
   | "BACKUP_FAILED"
   | "LOCK_RACE"
-  | "INVALID_INPUT"
+  | "INVALID_INPUT";
 
 export class KeyStoreError extends Error {
-  constructor(public readonly code: KeyStoreErrorCode, message: string) {
-    super(message)
-    this.name = "KeyStoreError"
+  constructor(
+    public readonly code: KeyStoreErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "KeyStoreError";
   }
 }
