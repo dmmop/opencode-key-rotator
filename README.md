@@ -35,7 +35,7 @@ npx opencode-key-rotator init
 
 ### Automatic (recommended)
 
-Run the init command to register the plugin in your OpenCode config:
+Run the init command to register the plugin in your OpenCode config and create a default sidecar config:
 
 ```bash
 opencode-key-rotator init
@@ -108,7 +108,7 @@ Create a sidecar config file at `~/.config/opencode/opencode-key-rotator/config.
     "lockTtlMs": 30000
   },
   "ui": {
-    "toastDurationMs": 8000
+    "toastDurationMs": 11000
   }
 }
 ```
