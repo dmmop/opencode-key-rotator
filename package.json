@@ -4,7 +4,10 @@
   "description": "Reactive OpenCode provider credential rotation with TUI key management.",
   "author": "dmmop <2412013-dmmop@users.noreply.gitlab.com>",
   "license": "MIT",
-  "repository": "github:dmmop/opencode-key-rotator",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dmmop/opencode-key-rotator.git"
+  },
   "keywords": [
     "opencode",
     "key-rotation",
@@ -15,7 +18,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "opencode-key-rotator": "./dist/bin.js"
+    "opencode-key-rotator": "dist/bin.js"
   },
   "exports": {
     ".": {
