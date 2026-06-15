@@ -209,12 +209,12 @@ function formatProviderHealth(status: KeyStatus): string {
 }
 
 function formatRotationReason(reason: string): string {
-  if (reason === "matched_rotation_patterns") return "Rate limit detected"
-  if (reason === "provider_has_less_than_two_saved_keys") return "No alternative key available"
-  if (reason === "rotatable_error_without_provider_id" || reason === "rotatable_retry_without_provider_id") return "Provider could not be determined"
-  if (reason === "active_credentials_changed_outside_plugin") return "Active credentials changed outside key rotator"
+  if (reason === "matched_rotation_patterns") return "Rate limit"
+  if (reason === "provider_has_less_than_two_saved_keys") return "No fallback key"
+  if (reason === "rotatable_error_without_provider_id" || reason === "rotatable_retry_without_provider_id") return "Provider unknown"
+  if (reason === "active_credentials_changed_outside_plugin") return "Credential mismatch"
   if (reason === "key_store_error") return "Key store error"
-  if (reason === "unexpected_rotation_error") return "Unexpected rotation error"
+  if (reason === "unexpected_rotation_error") return "Rotation error"
   return reason.replace(/_/g, " ")
 }
 
