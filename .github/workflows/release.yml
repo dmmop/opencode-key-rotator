@@ -47,5 +47,8 @@ jobs:
         run: |
           version=$(node -p "require('./package.json').version")
           gh release create "v${version}" --generate-notes --title "v${version}"
-      - name: Publish to npm
-        run: npm publish --provenance --access public
+      - name: Upgrade npm & publish
+        run: |
+          npm install -g npm@latest
+          unset NODE_AUTH_TOKEN
+          npm publish --access public
