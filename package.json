@@ -1,6 +1,6 @@
 {
   "name": "opencode-key-rotator",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Reactive OpenCode provider credential rotation with TUI key management.",
   "author": "dmmop <2412013-dmmop@users.noreply.gitlab.com>",
   "license": "MIT",
