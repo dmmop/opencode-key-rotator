@@ -166,15 +166,18 @@ async function rotateKeyForEvent(
       decision: "no_alternative",
       reason: "provider_has_less_than_two_saved_keys",
     });
-    if (request.toastOnSkip)
-      await showToast(client, config, "Key rotation skipped", `${providerID} has no alternative key.`, "warning");
+    if (request.toastOnSkip) await showToast(client, config, "Key rotation skipped", `${providerID} has no alternative key.`, "warning");
     return;
   }
 
   const currentAlias = store.readActiveAliases()[providerID];
   if (currentAlias) markAliasCoolingDown(providerID, currentAlias);
 
-  const nextAlias = nextAvailableAlias(providerID, keys.map((key) => key.alias), currentAlias);
+  const nextAlias = nextAvailableAlias(
+    providerID,
+    keys.map((key) => key.alias),
+    currentAlias,
+  );
   if (!nextAlias) {
     writeRotationLog(store, {
       ...baseLogEntry(request.info, request.timestamp),
