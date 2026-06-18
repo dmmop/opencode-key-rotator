@@ -137,10 +137,7 @@ function applyConfigEdit(content: string, jsonPath: Array<string | number>, valu
 
 function pluginMatches(plugin: unknown, spec: string): boolean {
   const value = Array.isArray(plugin) ? plugin[0] : plugin;
-  return (
-    typeof value === "string" &&
-    (value === spec || value === PACKAGE_NAME || value.endsWith(`/${PACKAGE_SHORT_NAME}`))
-  );
+  return typeof value === "string" && (value === spec || value === PACKAGE_NAME || value.endsWith(`/${PACKAGE_SHORT_NAME}`));
 }
 
 function createConfig(schema: string, spec: string | undefined): string {

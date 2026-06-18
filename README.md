@@ -50,9 +50,7 @@ Add the plugin to **both** `opencode.json` and `tui.json` in your OpenCode confi
 
 ```jsonc
 {
-  "plugin": [
-    "@dmmop/opencode-key-rotator"
-  ]
+  "plugin": ["@dmmop/opencode-key-rotator"],
 }
 ```
 
@@ -60,9 +58,7 @@ Add the plugin to **both** `opencode.json` and `tui.json` in your OpenCode confi
 
 ```jsonc
 {
-  "plugin": [
-    "@dmmop/opencode-key-rotator"
-  ]
+  "plugin": ["@dmmop/opencode-key-rotator"],
 }
 ```
 
