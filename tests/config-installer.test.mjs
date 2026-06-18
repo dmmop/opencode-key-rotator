@@ -20,12 +20,12 @@ test("init adds plugin to JSONC configs idempotently", () => {
 `,
   );
 
-  updateOpenCodeConfigs({ action: "init", spec: "@dmmop/opencode-key-rotator", configDir });
-  updateOpenCodeConfigs({ action: "init", spec: "@dmmop/opencode-key-rotator", configDir });
+  updateOpenCodeConfigs({ action: "init", spec: "opencode-key-rotator", configDir });
+  updateOpenCodeConfigs({ action: "init", spec: "opencode-key-rotator", configDir });
 
   const content = fs.readFileSync(opencodeFile, "utf8");
   assert.match(content, /keep this comment/);
-  assert.equal(countOccurrences(content, "@dmmop/opencode-key-rotator"), 1);
+  assert.equal(countOccurrences(content, "opencode-key-rotator"), 1);
   assert.match(content, /existing-plugin/);
 });
 
@@ -36,22 +36,22 @@ test("remove deletes only the target plugin and removes empty plugin property", 
   fs.writeFileSync(
     opencodeFile,
     `{
-  "plugin": ["existing-plugin", "@dmmop/opencode-key-rotator"]
+  "plugin": ["existing-plugin", "opencode-key-rotator"]
 }
 `,
   );
   fs.writeFileSync(
     tuiFile,
     `{
-  "plugin": ["@dmmop/opencode-key-rotator"]
+  "plugin": ["opencode-key-rotator"]
 }
 `,
   );
 
-  updateOpenCodeConfigs({ action: "remove", spec: "@dmmop/opencode-key-rotator", configDir });
+  updateOpenCodeConfigs({ action: "remove", spec: "opencode-key-rotator", configDir });
 
   assert.match(fs.readFileSync(opencodeFile, "utf8"), /existing-plugin/);
-  assert.doesNotMatch(fs.readFileSync(opencodeFile, "utf8"), /@dmmop\/opencode-key-rotator/);
+  assert.doesNotMatch(fs.readFileSync(opencodeFile, "utf8"), /opencode-key-rotator/);
   assert.doesNotMatch(fs.readFileSync(tuiFile, "utf8"), /"plugin"/);
 });
 
@@ -60,7 +60,7 @@ test("default config directory follows XDG_CONFIG_HOME", () => {
   const previous = process.env.XDG_CONFIG_HOME;
   process.env.XDG_CONFIG_HOME = base;
   try {
-    const results = updateOpenCodeConfigs({ action: "init", spec: "@dmmop/opencode-key-rotator" });
+    const results = updateOpenCodeConfigs({ action: "init", spec: "opencode-key-rotator" });
     assert.deepEqual(
       results.map((result) => result.path),
       [

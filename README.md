@@ -1,7 +1,7 @@
 # opencode-key-rotator
 
-[![npm version](https://img.shields.io/npm/v/@dmmop/opencode-key-rotator)](https://www.npmjs.com/package/@dmmop/opencode-key-rotator)
-[![npm downloads](https://img.shields.io/npm/dm/@dmmop/opencode-key-rotator)](https://www.npmjs.com/package/@dmmop/opencode-key-rotator)
+[![npm version](https://img.shields.io/npm/v/opencode-key-rotator)](https://www.npmjs.com/package/opencode-key-rotator)
+[![npm downloads](https://img.shields.io/npm/dm/opencode-key-rotator)](https://www.npmjs.com/package/opencode-key-rotator)
 [![CI](https://github.com/dmmop/opencode-key-rotator/actions/workflows/ci.yml/badge.svg)](https://github.com/dmmop/opencode-key-rotator/actions/workflows/ci.yml)
 [![code style: prettier](https://img.shields.io/badge/code_style-prettier-ff69b4.svg)](https://prettier.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -22,13 +22,13 @@ Automatically swaps to the next saved key when OpenCode encounters rate limits (
 ## Installation
 
 ```bash
-npx -y @dmmop/opencode-key-rotator init
+npx -y opencode-key-rotator init
 ```
 
 Or install it globally:
 
 ```bash
-npm install -g @dmmop/opencode-key-rotator
+npm install -g opencode-key-rotator
 opencode-key-rotator init
 ```
 
@@ -39,7 +39,7 @@ opencode-key-rotator init
 Run the init command to register the plugin in your OpenCode config and create a default sidecar config:
 
 ```bash
-npx -y @dmmop/opencode-key-rotator init
+npx -y opencode-key-rotator init
 ```
 
 ### Manual
@@ -50,7 +50,7 @@ Add the plugin to **both** `opencode.json` and `tui.json` in your OpenCode confi
 
 ```jsonc
 {
-  "plugin": ["@dmmop/opencode-key-rotator"],
+  "plugin": ["opencode-key-rotator"],
 }
 ```
 
@@ -58,7 +58,7 @@ Add the plugin to **both** `opencode.json` and `tui.json` in your OpenCode confi
 
 ```jsonc
 {
-  "plugin": ["@dmmop/opencode-key-rotator"],
+  "plugin": ["opencode-key-rotator"],
 }
 ```
 
@@ -67,7 +67,7 @@ Both files are required: `opencode.json` loads the server-side plugin (event han
 ### Uninstall
 
 ```bash
-npx -y @dmmop/opencode-key-rotator remove
+npx -y opencode-key-rotator remove
 ```
 
 Saved keys and rotation logs are preserved on removal.
