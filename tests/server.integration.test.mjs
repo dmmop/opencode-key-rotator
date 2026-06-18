@@ -60,6 +60,11 @@ function setupStore(dataDir, providerID) {
   return store;
 }
 
+function addProviderKey(dataDir, providerID, alias, key) {
+  fs.mkdirSync(path.join(dataDir, "keys", providerID), { recursive: true });
+  writeJson(path.join(dataDir, "keys", providerID, `${alias}.json`), { type: "api", key });
+}
+
 async function getEventHandler(dataDir, overrides = {}) {
   const client = createMockClient(dataDir, overrides);
   const plugin = await server({ client });
@@ -218,4 +223,73 @@ test("provider with less than two saved keys logs no_alternative", async () => {
 
   const entry = lastLogEntry(dataDir);
   assert.equal(entry.decision, "no_alternative");
+});
+
+test("all recently failed provider keys stop automatic rotation", async () => {
+  const { dataDir } = tempDataDir();
+  const providerID = "cooldown_openai";
+  setupStore(dataDir, providerID);
+
+  const { event } = await getEventHandler(dataDir);
+  await event({
+    event: {
+      type: "session.error",
+      properties: {
+        sessionID: "cooldown-session-1",
+        error: { name: "ProviderError", data: { providerID, statusCode: 429, message: "rate limit" } },
+      },
+    },
+  });
+  await event({
+    event: {
+      type: "session.error",
+      properties: {
+        sessionID: "cooldown-session-2",
+        error: { name: "ProviderError", data: { providerID, statusCode: 429, message: "rate limit" } },
+      },
+    },
+  });
+
+  const auth = readJson(path.join(dataDir, "auth.json"));
+  assert.equal(auth[providerID].key, "secondary-key");
+
+  const entry = lastLogEntry(dataDir);
+  assert.equal(entry.decision, "all_keys_cooling_down");
+  assert.equal(entry.reason, "all_saved_keys_are_cooling_down");
+  assert.equal(entry.activeAlias, "secondary");
+});
+
+test("automatic rotation skips cooling aliases when another key is available", async () => {
+  const { dataDir } = tempDataDir();
+  const providerID = "cooldown_three_openai";
+  setupStore(dataDir, providerID);
+  addProviderKey(dataDir, providerID, "tertiary", "tertiary-key");
+
+  const { event } = await getEventHandler(dataDir);
+  await event({
+    event: {
+      type: "session.error",
+      properties: {
+        sessionID: "cooldown-three-session-1",
+        error: { name: "ProviderError", data: { providerID, statusCode: 429, message: "rate limit" } },
+      },
+    },
+  });
+  await event({
+    event: {
+      type: "session.error",
+      properties: {
+        sessionID: "cooldown-three-session-2",
+        error: { name: "ProviderError", data: { providerID, statusCode: 429, message: "rate limit" } },
+      },
+    },
+  });
+
+  const auth = readJson(path.join(dataDir, "auth.json"));
+  assert.equal(auth[providerID].key, "tertiary-key");
+
+  const entry = lastLogEntry(dataDir);
+  assert.equal(entry.decision, "rotated");
+  assert.equal(entry.activeAlias, "secondary");
+  assert.equal(entry.nextAlias, "tertiary");
 });

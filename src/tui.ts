@@ -244,6 +244,7 @@ function formatRotationReason(reason: string): string {
   if (reason === "provider_has_less_than_two_saved_keys") return "No fallback key";
   if (reason === "rotatable_error_without_provider_id" || reason === "rotatable_retry_without_provider_id") return "Provider unknown";
   if (reason === "active_credentials_changed_outside_plugin") return "Credential mismatch";
+  if (reason === "all_saved_keys_are_cooling_down") return "All keys cooling down";
   if (reason === "key_store_error") return "Key store error";
   if (reason === "unexpected_rotation_error") return "Rotation error";
   return reason.replace(/_/g, " ");

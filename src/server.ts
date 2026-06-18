@@ -35,6 +35,8 @@ type RotationRequest = {
 // again when the final session.error arrives after retries.
 const rotatedSessions = new Map<string, number>();
 const CLIENT_CALL_TIMEOUT_MS = 1_000;
+const FAILED_ALIAS_COOLDOWN_MS = 2 * 60 * 1_000;
+const failedAliasCooldowns = new Map<string, Map<string, number>>();
 
 export const server: Plugin = async ({ client }) => {
   const config = await loadConfigForClient(client);
@@ -156,20 +158,37 @@ async function rotateKeyForEvent(
     return;
   }
 
-  if (!store.hasAlternativeKey(request.info.providerID)) {
+  const providerID = request.info.providerID;
+  const keys = store.listKeys(providerID);
+  if (keys.length < 2) {
     writeRotationLog(store, {
       ...baseLogEntry(request.info, request.timestamp),
       decision: "no_alternative",
       reason: "provider_has_less_than_two_saved_keys",
     });
     if (request.toastOnSkip)
-      await showToast(client, config, "Key rotation skipped", `${request.info.providerID} has no alternative key.`, "warning");
+      await showToast(client, config, "Key rotation skipped", `${providerID} has no alternative key.`, "warning");
+    return;
+  }
+
+  const currentAlias = store.readActiveAliases()[providerID];
+  if (currentAlias) markAliasCoolingDown(providerID, currentAlias);
+
+  const nextAlias = nextAvailableAlias(providerID, keys.map((key) => key.alias), currentAlias);
+  if (!nextAlias) {
+    writeRotationLog(store, {
+      ...baseLogEntry(request.info, request.timestamp),
+      decision: "all_keys_cooling_down",
+      reason: "all_saved_keys_are_cooling_down",
+      activeAlias: currentAlias,
+    });
+    if (request.toastOnSkip)
+      await showToast(client, config, "Key rotation skipped", `${providerID} has no available key outside cooldown.`, "warning");
     return;
   }
 
   try {
-    const result = store.rotateProviderKey(request.info.providerID);
-    if (!result) return;
+    const result = store.switchProviderKey(providerID, nextAlias, "auto-rotate");
 
     if (request.sessionID) markRotated(config, request.sessionID);
     writeRotationLog(store, {
@@ -183,7 +202,7 @@ async function rotateKeyForEvent(
       client,
       config,
       "Key rotated",
-      `${request.info.providerID}: ${result.previousAlias ?? "unknown"} -> ${result.activeAlias}`,
+      `${providerID}: ${result.previousAlias ?? "unknown"} -> ${result.activeAlias}`,
       "success",
     );
   } catch (rotationError) {
@@ -198,6 +217,33 @@ async function rotateKeyForEvent(
       rotationError,
     );
   }
+}
+
+function markAliasCoolingDown(providerID: string, alias: string): void {
+  let providerCooldowns = failedAliasCooldowns.get(providerID);
+  if (!providerCooldowns) {
+    providerCooldowns = new Map<string, number>();
+    failedAliasCooldowns.set(providerID, providerCooldowns);
+  }
+  providerCooldowns.set(alias, Date.now() + FAILED_ALIAS_COOLDOWN_MS);
+}
+
+function nextAvailableAlias(providerID: string, aliases: string[], currentAlias: string | undefined): string | undefined {
+  const providerCooldowns = failedAliasCooldowns.get(providerID);
+  const now = Date.now();
+  if (providerCooldowns) {
+    for (const [alias, cooldownUntil] of providerCooldowns) {
+      if (cooldownUntil <= now) providerCooldowns.delete(alias);
+    }
+    if (providerCooldowns.size === 0) failedAliasCooldowns.delete(providerID);
+  }
+
+  const currentIndex = currentAlias ? aliases.indexOf(currentAlias) : -1;
+  for (let offset = 1; offset <= aliases.length; offset += 1) {
+    const alias = aliases[(currentIndex + offset + aliases.length) % aliases.length];
+    if (alias !== currentAlias && !providerCooldowns?.has(alias)) return alias;
+  }
+  return undefined;
 }
 
 function baseLogEntry(info: ErrorInfo, timestamp: string): Omit<RotationLogEntry, "decision" | "reason"> {

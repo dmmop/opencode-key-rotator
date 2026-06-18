@@ -9,7 +9,8 @@ export type RotationDecision =
   | "provider_unknown"
   | "ignored"
   | "error"
-  | "fingerprint_mismatch";
+  | "fingerprint_mismatch"
+  | "all_keys_cooling_down";
 
 export type RotationLogEntry = {
   timestamp: string;
