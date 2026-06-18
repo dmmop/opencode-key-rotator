@@ -72,13 +72,13 @@ jobs:
       - run: npm run build
       - run: npm pack
       - run: |
-          tarball=$(ls opencode-key-rotator-*.tgz | head -n 1)
+          tarball=$(ls dmmop-opencode-key-rotator-*.tgz | head -n 1)
           tmpdir=$(mktemp -d)
           cd "$tmpdir"
           npm init -y
           npm install "$GITHUB_WORKSPACE/$tarball"
           node --input-type=module -e "
-            import('opencode-key-rotator');
-            import('opencode-key-rotator/server');
-            import('opencode-key-rotator/tui');
+            import('@dmmop/opencode-key-rotator');
+            import('@dmmop/opencode-key-rotator/server');
+            import('@dmmop/opencode-key-rotator/tui');
           "
