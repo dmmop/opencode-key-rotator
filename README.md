@@ -22,13 +22,13 @@ Automatically swaps to the next saved key when OpenCode encounters rate limits (
 ## Installation
 
 ```bash
-npx -y opencode-key-rotator init
+npx -y @dmmop/opencode-key-rotator init
 ```
 
 Or install it globally:
 
 ```bash
-npm install -g opencode-key-rotator
+npm install -g @dmmop/opencode-key-rotator
 opencode-key-rotator init
 ```
 
@@ -39,7 +39,7 @@ opencode-key-rotator init
 Run the init command to register the plugin in your OpenCode config and create a default sidecar config:
 
 ```bash
-opencode-key-rotator init
+npx -y @dmmop/opencode-key-rotator init
 ```
 
 ### Manual
@@ -67,7 +67,7 @@ Both files are required: `opencode.json` loads the server-side plugin (event han
 ### Uninstall
 
 ```bash
-opencode-key-rotator remove
+npx -y @dmmop/opencode-key-rotator remove
 ```
 
 Saved keys and rotation logs are preserved on removal.
