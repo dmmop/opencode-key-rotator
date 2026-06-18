@@ -130,9 +130,9 @@ function saveKey(api: TuiPluginApi, config: KeyRotatorConfig, store: KeyStore, p
 function openKeySwitch(api: TuiPluginApi, config: KeyRotatorConfig): void {
   const store = getStore(api, config);
   if (!store) return;
-  const providers = safeCall(() => store.getStatuses().filter((status) => status.aliases.length > 0), api, config);
+  const providers = safeCall(() => store.getStatuses().filter((status) => status.aliases.length > 1), api, config);
   if (!providers || providers.length === 0) {
-    showAlert(api, "No saved keys", "No provider keys are available to switch.");
+    showAlert(api, "No saved keys", "No provider has multiple saved keys to switch between.");
     return;
   }
 
