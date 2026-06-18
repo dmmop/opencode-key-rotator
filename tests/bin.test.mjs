@@ -40,7 +40,7 @@ test("init creates opencode.json, tui.json, and key-rotator config when missing"
   assert.equal(keyRotatorConfig.ui.toastDurationMs, 11_000);
 
   const opencodeConfig = JSON.parse(fs.readFileSync(path.join(configDir, "opencode.json"), "utf8"));
-  assert.ok(opencodeConfig.plugin.includes("opencode-key-rotator"));
+  assert.ok(opencodeConfig.plugin.includes("@dmmop/opencode-key-rotator"));
 });
 
 test("init is idempotent", () => {

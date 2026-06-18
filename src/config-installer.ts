@@ -21,7 +21,8 @@ export type InstallOptions = {
   configDir?: string;
 };
 
-const PACKAGE_NAME = "opencode-key-rotator";
+const PACKAGE_NAME = "@dmmop/opencode-key-rotator";
+const PACKAGE_SHORT_NAME = "opencode-key-rotator";
 const OPENCODE_SCHEMA_URL = "https://opencode.ai/config.json";
 const TUI_SCHEMA_URL = "https://opencode.ai/tui.json";
 const JSON_FORMATTING = { insertSpaces: true, tabSize: 2, eol: "\n" };
@@ -136,7 +137,10 @@ function applyConfigEdit(content: string, jsonPath: Array<string | number>, valu
 
 function pluginMatches(plugin: unknown, spec: string): boolean {
   const value = Array.isArray(plugin) ? plugin[0] : plugin;
-  return typeof value === "string" && (value === spec || value === PACKAGE_NAME || value.endsWith(`/${PACKAGE_NAME}`));
+  return (
+    typeof value === "string" &&
+    (value === spec || value === PACKAGE_NAME || value.endsWith(`/${PACKAGE_SHORT_NAME}`))
+  );
 }
 
 function createConfig(schema: string, spec: string | undefined): string {

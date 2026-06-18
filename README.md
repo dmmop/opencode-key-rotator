@@ -1,19 +1,19 @@
 # opencode-key-rotator
 
-[![npm version](https://img.shields.io/npm/v/opencode-key-rotator)](https://www.npmjs.com/package/opencode-key-rotator)
-[![npm downloads](https://img.shields.io/npm/dm/opencode-key-rotator)](https://www.npmjs.com/package/opencode-key-rotator)
+[![npm version](https://img.shields.io/npm/v/@dmmop/opencode-key-rotator)](https://www.npmjs.com/package/@dmmop/opencode-key-rotator)
+[![npm downloads](https://img.shields.io/npm/dm/@dmmop/opencode-key-rotator)](https://www.npmjs.com/package/@dmmop/opencode-key-rotator)
 [![CI](https://github.com/dmmop/opencode-key-rotator/actions/workflows/ci.yml/badge.svg)](https://github.com/dmmop/opencode-key-rotator/actions/workflows/ci.yml)
 [![code style: prettier](https://img.shields.io/badge/code_style-prettier-ff69b4.svg)](https://prettier.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Reactive OpenCode plugin that automatically rotates provider API keys on rate limits and quota errors, with built-in TUI key management.
 
-Automatically swaps to the next saved key when OpenCode encounters rate limits (429), quota exhaustion, or auth errors during sessions.
+Automatically swaps to the next saved key when OpenCode encounters rate limits (429), quota exhaustion, or resource errors during sessions.
 
 ## Features
 
-- **Automatic rotation** — detects rate-limit and auth errors and swaps to the next available key on retry
-- **TUI key manager** — interactive terminal UI to manage provider keys with masked values and per-provider grouping
+- **Automatic rotation** — detects rate-limit and quota errors and swaps to the next available key on retry
+- **TUI key manager** — interactive terminal UI to manage provider keys with per-provider grouping
 - **OpenCode plugin** — integrates as a server plugin with no manual setup after initial configuration
 - **Persistent storage** — keys and rotation logs stored in the XDG data directory
 - **Configurable** — customize rotation patterns, dedup window, backups, and toast duration via sidecar config
@@ -44,21 +44,29 @@ opencode-key-rotator init
 
 ### Manual
 
-Add the plugin to your OpenCode `opencode.jsonc` config:
+Add the plugin to **both** `opencode.json` and `tui.json` in your OpenCode config directory:
+
+**opencode.json:**
 
 ```jsonc
 {
-  "plugins": [
-    {
-      "from": "opencode-key-rotator",
-      "params": {
-        "server": true,
-        "tui": true,
-      },
-    },
-  ],
+  "plugin": [
+    "@dmmop/opencode-key-rotator"
+  ]
 }
 ```
+
+**tui.json:**
+
+```jsonc
+{
+  "plugin": [
+    "@dmmop/opencode-key-rotator"
+  ]
+}
+```
+
+Both files are required: `opencode.json` loads the server-side plugin (event handlers, key rotation pipeline), and `tui.json` loads the TUI-side plugin (slash commands `/key-save`, `/key-switch`, `/key-status`).
 
 ### Uninstall
 
@@ -115,8 +123,9 @@ The config file supports JSONC (comments and trailing commas). Resolution order:
 2. If rotation did not happen early, `session.error` acts as a fallback. The plugin rotates on HTTP 429 or matching messages.
 3. The provider is inferred from session messages first, then from the configured model.
 4. If at least two keys are saved for the provider, the plugin switches to the next alias in a round-robin cycle.
-5. Before switching, the current credentials are saved under the previous alias so you can roll back.
-6. Every decision is recorded in `~/.local/share/opencode/keys/rotation.log.jsonl`.
+5. If a rotated key fails on the next attempt, that alias enters a 2-minute cooldown and is skipped during subsequent rotations.
+6. Before switching, the current credentials are saved under the previous alias so you can roll back.
+7. Every decision is recorded in `~/.local/share/opencode/keys/rotation.log.jsonl`.
 
 ## Data layout
 
@@ -136,10 +145,11 @@ The config file supports JSONC (comments and trailing commas). Resolution order:
 
 | Symptom                                          | Cause                                                                               | Fix                                             |
 | ------------------------------------------------ | ----------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `AUTH_MISSING` error                             | `auth.json` does not exist                                                          | Run `/connect` in OpenCode and then `/key-save` |
+| `"OpenCode auth file was not found"` error       | `auth.json` does not exist                                                          | Run `/connect` in OpenCode and then `/key-save` |
 | `active credentials changed outside key rotator` | The provider credentials in `auth.json` no longer match the saved alias fingerprint | Re-run `/key-save` for the active alias         |
 | `Provider unknown`                               | The plugin could not infer the provider from session messages or config             | Ensure the model is set (e.g. `openai/gpt-4`)   |
 | `No fallback key`                                | Only one key is saved for the provider                                              | Save at least two aliases with `/key-save`      |
+| `All keys cooling down`                          | All saved aliases are in cooldown after failed attempts                             | Wait 2 minutes or save additional aliases       |
 
 ## Development
 
