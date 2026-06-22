@@ -257,7 +257,10 @@ export function createKeyStore(dataDir: string, config?: KeyRotatorConfig) {
     }
 
     const safeReason = reason.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "auth-write";
-    const backupFile = path.join(paths.backupsDir, `auth-${timestampForFile()}-${process.pid}-${safeReason}.json`);
+    const backupFile = path.join(
+      paths.backupsDir,
+      `auth-${timestampForFile()}-${process.pid}-${process.hrtime.bigint()}-${safeReason}.json`,
+    );
     try {
       fs.copyFileSync(paths.authFile, backupFile, fs.constants.COPYFILE_EXCL);
       chmodIfExists(backupFile, 0o600);

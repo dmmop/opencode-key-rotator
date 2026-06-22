@@ -130,30 +130,35 @@ function saveKey(api: TuiPluginApi, config: KeyRotatorConfig, store: KeyStore, p
 function openKeySwitch(api: TuiPluginApi, config: KeyRotatorConfig): void {
   const store = getStore(api, config);
   if (!store) return;
-  const providers = safeCall(() => store.getStatuses().filter((status) => status.aliases.length > 1), api, config);
+  const providers = safeCall(
+    () => store.getStatuses().filter((status) => status.aliases.some((alias) => alias !== status.activeAlias)),
+    api,
+    config,
+  );
   if (!providers || providers.length === 0) {
     showAlert(api, "No saved keys", "No provider has multiple saved keys to switch between.");
     return;
   }
 
   api.ui.dialog.replace(() =>
-    api.ui.DialogSelect<string>({
+    api.ui.DialogSelect<KeyStatus>({
       title: "Switch provider key",
       placeholder: "Choose provider",
       options: providers.map((status) => ({
         title: status.providerID,
-        value: status.providerID,
+        value: status,
         description: status.activeAlias ? `active: ${status.activeAlias}` : "no active alias",
       })),
-      onSelect: (option) => chooseAlias(api, config, store, option.value),
+      onSelect: (option) => chooseAlias(api, config, store, option.value.providerID, option.value.activeAlias),
     }),
   );
 }
 
-function chooseAlias(api: TuiPluginApi, config: KeyRotatorConfig, store: KeyStore, providerID: string): void {
+function chooseAlias(api: TuiPluginApi, config: KeyRotatorConfig, store: KeyStore, providerID: string, activeAlias?: string): void {
   const keys = safeCall(() => store.listKeys(providerID), api, config);
-  if (!keys || keys.length === 0) {
-    showAlert(api, "No saved keys", `${providerID} has no saved keys.`);
+  const switchableKeys = keys?.filter((key) => key.alias !== activeAlias);
+  if (!switchableKeys || switchableKeys.length === 0) {
+    showAlert(api, "No alternative keys", `${providerID} has no alternative saved keys.`);
     return;
   }
 
@@ -161,7 +166,7 @@ function chooseAlias(api: TuiPluginApi, config: KeyRotatorConfig, store: KeyStor
     api.ui.DialogSelect<string>({
       title: `Switch ${providerID}`,
       placeholder: "Choose alias",
-      options: keys.map((key) => ({ title: key.alias, value: key.alias })),
+      options: switchableKeys.map((key) => ({ title: key.alias, value: key.alias })),
       onSelect: (option) => {
         const result = safeCall(() => store.switchProviderKey(providerID, option.value), api, config);
         if (!result) return;

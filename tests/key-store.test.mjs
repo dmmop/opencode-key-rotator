@@ -94,6 +94,34 @@ test("reads auth.json from XDG data dir and keeps keys in the same data dir", ()
   assert.equal(fs.existsSync(path.join(dataDir, "keys", "openai", "personal.json")), true);
 });
 
+test("auth backups are unique when created with the same timestamp", () => {
+  const { dataDir } = tempDataDir();
+  writeJson(path.join(dataDir, "auth.json"), { openai: { type: "api", key: "key-a" } });
+  const store = createKeyStore(dataDir);
+  const RealDate = globalThis.Date;
+
+  try {
+    globalThis.Date = class extends RealDate {
+      constructor(...args) {
+        super(...(args.length > 0 ? args : ["2026-06-22T06:30:27.148Z"]));
+      }
+
+      static now() {
+        return new RealDate("2026-06-22T06:30:27.148Z").getTime();
+      }
+    };
+
+    const first = store.backupAuth("auto-rotate");
+    const second = store.backupAuth("auto-rotate");
+
+    assert.notEqual(first, second);
+    assert.equal(fs.existsSync(first), true);
+    assert.equal(fs.existsSync(second), true);
+  } finally {
+    globalThis.Date = RealDate;
+  }
+});
+
 function tempDataDir() {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-key-rotator-"));
   // Isolate from the real home directory so XDG fallback candidates do not

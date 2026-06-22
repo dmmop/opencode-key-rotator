@@ -171,10 +171,11 @@ async function rotateKeyForEvent(
   }
 
   const currentAlias = store.readActiveAliases()[providerID];
-  if (currentAlias) markAliasCoolingDown(providerID, currentAlias);
+  const cooldownKey = providerCooldownKey(store, providerID);
+  if (currentAlias) markAliasCoolingDown(cooldownKey, currentAlias);
 
   const nextAlias = nextAvailableAlias(
-    providerID,
+    cooldownKey,
     keys.map((key) => key.alias),
     currentAlias,
   );
@@ -222,23 +223,27 @@ async function rotateKeyForEvent(
   }
 }
 
-function markAliasCoolingDown(providerID: string, alias: string): void {
-  let providerCooldowns = failedAliasCooldowns.get(providerID);
+function providerCooldownKey(store: KeyStore, providerID: string): string {
+  return `${store.paths.dataDir}\0${providerID}`;
+}
+
+function markAliasCoolingDown(cooldownKey: string, alias: string): void {
+  let providerCooldowns = failedAliasCooldowns.get(cooldownKey);
   if (!providerCooldowns) {
     providerCooldowns = new Map<string, number>();
-    failedAliasCooldowns.set(providerID, providerCooldowns);
+    failedAliasCooldowns.set(cooldownKey, providerCooldowns);
   }
   providerCooldowns.set(alias, Date.now() + FAILED_ALIAS_COOLDOWN_MS);
 }
 
-function nextAvailableAlias(providerID: string, aliases: string[], currentAlias: string | undefined): string | undefined {
-  const providerCooldowns = failedAliasCooldowns.get(providerID);
+function nextAvailableAlias(cooldownKey: string, aliases: string[], currentAlias: string | undefined): string | undefined {
+  const providerCooldowns = failedAliasCooldowns.get(cooldownKey);
   const now = Date.now();
   if (providerCooldowns) {
     for (const [alias, cooldownUntil] of providerCooldowns) {
       if (cooldownUntil <= now) providerCooldowns.delete(alias);
     }
-    if (providerCooldowns.size === 0) failedAliasCooldowns.delete(providerID);
+    if (providerCooldowns.size === 0) failedAliasCooldowns.delete(cooldownKey);
   }
 
   const currentIndex = currentAlias ? aliases.indexOf(currentAlias) : -1;
