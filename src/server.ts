@@ -45,6 +45,16 @@ const CLIENT_CALL_TIMEOUT_MS = 1_000;
 const FAILED_ALIAS_COOLDOWN_MS = 2 * 60 * 1_000;
 const failedAliasCooldowns = new Map<string, Map<string, number>>();
 
+function toLocalISOString(date: number | Date): string {
+  const d = typeof date === "number" ? new Date(date) : date;
+  const pad2 = (n: number) => String(n).padStart(2, "0");
+  const offsetMinutes = -d.getTimezoneOffset();
+  const tzSign = offsetMinutes >= 0 ? "+" : "-";
+  const tzHours = pad2(Math.floor(Math.abs(offsetMinutes) / 60));
+  const tzMins = pad2(Math.abs(offsetMinutes) % 60);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}${tzSign}${tzHours}:${tzMins}`;
+}
+
 export const server: Plugin = async ({ client }) => {
   const config = await loadConfigForClient(client);
   if (!config.rotation.enabled) {
@@ -255,7 +265,20 @@ async function rotateKeyForEvent(
 
   const currentAlias = store.readActiveAliases()[providerID];
   const cooldownKey = providerCooldownKey(store, providerID);
-  if (currentAlias) markAliasCoolingDown(cooldownKey, currentAlias);
+  const now = new Date();
+  const cooldownMs = computeCooldownMs(request.info.headers);
+  if (currentAlias) {
+    const expiresAt = markAliasCoolingDown(cooldownKey, currentAlias, cooldownMs);
+    writeRotationLog(store, {
+      ...baseLogEntry(request.info, request.timestamp),
+      decision: "diagnostic",
+      reason: "alias_entered_cooldown",
+      coolingDownAlias: currentAlias,
+      cooldownEnteredAt: toLocalISOString(now),
+      cooldownExpiresAt: toLocalISOString(expiresAt),
+      cooldownMs: cooldownMs,
+    });
+  }
 
   const nextAlias = nextAvailableAlias(
     cooldownKey,
@@ -263,11 +286,19 @@ async function rotateKeyForEvent(
     currentAlias,
   );
   if (!nextAlias) {
+    const cooldowns = failedAliasCooldowns.get(cooldownKey);
+    const cooldownState: string[] = [];
+    if (cooldowns) {
+      for (const [alias, expiresAt] of cooldowns) {
+        cooldownState.push(`${alias}: expires ${toLocalISOString(expiresAt)}`);
+      }
+    }
     writeRotationLog(store, {
       ...baseLogEntry(request.info, request.timestamp),
       decision: "all_keys_cooling_down",
       reason: "all_saved_keys_are_cooling_down",
       activeAlias: currentAlias,
+      cooldownState: cooldownState.length ? cooldownState.join(", ") : undefined,
     });
     if (request.toastOnSkip)
       await showToast(client, config, "Key rotation skipped", `${providerID} has no available key outside cooldown.`, "warning");
@@ -310,13 +341,34 @@ function providerCooldownKey(store: KeyStore, providerID: string): string {
   return `${store.paths.dataDir}\0${providerID}`;
 }
 
-function markAliasCoolingDown(cooldownKey: string, alias: string): void {
+function parseRetryAfterMs(headers: Record<string, string> | undefined): number | undefined {
+  if (!headers) return undefined;
+  const raw = headers["retry-after"] ?? headers["Retry-After"];
+  if (!raw) return undefined;
+  const asSeconds = Number(raw);
+  if (!Number.isNaN(asSeconds)) return asSeconds * 1_000;
+  const parsed = Date.parse(raw);
+  if (!Number.isNaN(parsed)) return Math.max(0, parsed - Date.now());
+  return undefined;
+}
+
+function computeCooldownMs(headers: Record<string, string> | undefined): number {
+  const retryAfterMs = parseRetryAfterMs(headers);
+  if (retryAfterMs !== undefined) {
+    return Math.max(FAILED_ALIAS_COOLDOWN_MS, retryAfterMs);
+  }
+  return FAILED_ALIAS_COOLDOWN_MS;
+}
+
+function markAliasCoolingDown(cooldownKey: string, alias: string, cooldownMs: number = FAILED_ALIAS_COOLDOWN_MS): number {
   let providerCooldowns = failedAliasCooldowns.get(cooldownKey);
   if (!providerCooldowns) {
     providerCooldowns = new Map<string, number>();
     failedAliasCooldowns.set(cooldownKey, providerCooldowns);
   }
-  providerCooldowns.set(alias, Date.now() + FAILED_ALIAS_COOLDOWN_MS);
+  const expiresAt = Date.now() + cooldownMs;
+  providerCooldowns.set(alias, expiresAt);
+  return expiresAt;
 }
 
 function nextAvailableAlias(cooldownKey: string, aliases: string[], currentAlias: string | undefined): string | undefined {

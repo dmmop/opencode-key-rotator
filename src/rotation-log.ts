@@ -33,6 +33,11 @@ export type RotationLogEntry = {
   reason: string;
   activeAlias?: string;
   nextAlias?: string;
+  coolingDownAlias?: string;
+  cooldownEnteredAt?: string;
+  cooldownExpiresAt?: string;
+  cooldownMs?: number;
+  cooldownState?: string;
 };
 
 const MAX_MESSAGE_LENGTH = 500;
