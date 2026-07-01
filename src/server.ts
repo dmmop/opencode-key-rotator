@@ -6,6 +6,13 @@ import { sanitizeMessage, sanitizeRateLimitHeaders, writeRotationLog, type Rotat
 import { loadConfig, type KeyRotatorConfig } from "./config.js";
 
 type ErrorInfo = {
+  sessionID?: string;
+  attempt?: number;
+  eventType?: string;
+  propertyKeys?: string[];
+  errorKeys?: string[];
+  errorDataKeys?: string[];
+  payload?: unknown;
   name?: string;
   providerID?: string;
   providerSource?: ProviderSource;
@@ -53,9 +60,23 @@ export const server: Plugin = async ({ client }) => {
         return;
       }
 
-      if (genericEvent.type !== "session.error") return;
+      if (genericEvent.type === "session.status") {
+        await handleSessionStatus(client, config, genericEvent.properties);
+        return;
+      }
 
-      await handleSessionError(client, config, genericEvent.properties);
+      if (genericEvent.type === "session.error") {
+        await handleSessionError(client, config, genericEvent.properties);
+        return;
+      }
+
+      await writeDiagnosticLog(
+        client,
+        config,
+        diagnosticInfoForEvent(genericEvent.type, genericEvent.properties),
+        new Date().toISOString(),
+        "unhandled_event",
+      );
     },
   };
 };
@@ -68,20 +89,70 @@ async function handleSessionNextRetried(
   const sessionID = typeof properties?.sessionID === "string" ? properties.sessionID : undefined;
   const attempt = typeof properties?.attempt === "number" ? properties.attempt : undefined;
   const error = properties?.error;
-  const message = isRecord(error) && typeof error.message === "string" ? error.message : undefined;
+  const info = normalizeRetryError(error);
+  info.sessionID = sessionID;
+  info.attempt = attempt;
+  info.eventType = "session.next.retried";
+  info.propertyKeys = sortedKeys(properties);
+  info.payload = properties;
 
   if (!sessionID || attempt !== 1) return;
-  if (!message || !isRotatableMessage(message, config)) return;
-  if (wasRotatedRecently(config, sessionID)) return;
+  if (!info.message || !isRotatableMessage(info.message, config)) {
+    await writeDiagnosticLog(client, config, info, new Date().toISOString(), "retry_error_did_not_match_rotation_patterns");
+    return;
+  }
+  if (wasRotatedRecently(config, sessionID)) {
+    await writeDiagnosticLog(client, config, info, new Date().toISOString(), "session_already_rotated_recently");
+    return;
+  }
 
   const timestamp = new Date().toISOString();
 
   await rotateKeyForEvent(client, config, {
     sessionID,
-    info: { message },
+    info,
     timestamp,
     decision: "rotated_on_retry",
     unknownProviderReason: "rotatable_retry_without_provider_id",
+    toastOnSkip: false,
+  });
+}
+
+async function handleSessionStatus(
+  client: Parameters<Plugin>[0]["client"],
+  config: KeyRotatorConfig,
+  properties: Record<string, unknown> | undefined,
+): Promise<void> {
+  const sessionID = typeof properties?.sessionID === "string" ? properties.sessionID : undefined;
+  const status = isRecord(properties?.status) ? properties.status : undefined;
+  if (!status || status.type !== "retry") return;
+
+  const attempt = typeof status.attempt === "number" ? status.attempt : undefined;
+  const info = normalizeStatusRetryError(status);
+  info.sessionID = sessionID;
+  info.attempt = attempt;
+  info.eventType = "session.status";
+  info.propertyKeys = sortedKeys(properties);
+  info.payload = properties;
+
+  if (!sessionID || attempt !== 1) return;
+  if (!info.message || !isRotatableMessage(info.message, config)) {
+    await writeDiagnosticLog(client, config, info, new Date().toISOString(), "status_retry_did_not_match_rotation_patterns");
+    return;
+  }
+  if (wasRotatedRecently(config, sessionID)) {
+    await writeDiagnosticLog(client, config, info, new Date().toISOString(), "session_already_rotated_recently");
+    return;
+  }
+
+  const timestamp = new Date().toISOString();
+
+  await rotateKeyForEvent(client, config, {
+    sessionID,
+    info,
+    timestamp,
+    decision: "rotated_on_retry",
+    unknownProviderReason: "rotatable_status_retry_without_provider_id",
     toastOnSkip: false,
   });
 }
@@ -92,9 +163,13 @@ async function handleSessionError(
   properties: Record<string, unknown> | undefined,
 ): Promise<void> {
   const error = properties?.error;
-  const info = normalizeError(error);
-  const timestamp = new Date().toISOString();
   const sessionID = typeof properties?.sessionID === "string" ? properties.sessionID : undefined;
+  const info = normalizeError(error);
+  info.sessionID = sessionID;
+  info.eventType = "session.error";
+  info.propertyKeys = sortedKeys(properties);
+  info.payload = properties;
+  const timestamp = new Date().toISOString();
 
   const store = await createStoreForClient(client, config);
   if (!store) {
@@ -138,7 +213,15 @@ async function rotateKeyForEvent(
     return;
   }
 
-  if (request.sessionID && wasRotatedRecently(config, request.sessionID)) return;
+  if (request.sessionID && wasRotatedRecently(config, request.sessionID)) {
+    writeRotationLog(store, {
+      ...baseLogEntry(request.info, request.timestamp),
+      sessionID: request.sessionID,
+      decision: "diagnostic",
+      reason: "session_already_rotated_recently",
+    });
+    return;
+  }
 
   if (!request.info.providerID) {
     const inferred = await inferProvider(client, request.sessionID);
@@ -257,6 +340,13 @@ function nextAvailableAlias(cooldownKey: string, aliases: string[], currentAlias
 function baseLogEntry(info: ErrorInfo, timestamp: string): Omit<RotationLogEntry, "decision" | "reason"> {
   return {
     timestamp,
+    sessionID: info.sessionID,
+    attempt: info.attempt,
+    eventType: info.eventType,
+    propertyKeys: info.propertyKeys,
+    errorKeys: info.errorKeys,
+    errorDataKeys: info.errorDataKeys,
+    payload: info.payload,
     providerID: info.providerID,
     providerSource: info.providerSource,
     errorName: info.name,
@@ -264,6 +354,22 @@ function baseLogEntry(info: ErrorInfo, timestamp: string): Omit<RotationLogEntry
     message: info.message,
     rateLimitHeaders: sanitizeRateLimitHeaders(info.headers),
   };
+}
+
+async function writeDiagnosticLog(
+  client: Parameters<Plugin>[0]["client"],
+  config: KeyRotatorConfig,
+  info: ErrorInfo,
+  timestamp: string,
+  reason: string,
+): Promise<void> {
+  const store = await createStoreForClient(client, config);
+  if (!store) return;
+  writeRotationLog(store, {
+    ...baseLogEntry(info, timestamp),
+    decision: "diagnostic",
+    reason,
+  });
 }
 
 async function logRotationError(
@@ -302,14 +408,68 @@ function normalizeError(error: unknown): ErrorInfo {
   const data = record.data && typeof record.data === "object" ? (record.data as Record<string, unknown>) : undefined;
 
   return {
+    errorKeys: sortedKeys(record),
+    errorDataKeys: sortedKeys(data),
     name,
     providerID: typeof data?.providerID === "string" ? data.providerID : undefined,
     providerSource: typeof data?.providerID === "string" ? "error" : undefined,
     statusCode: typeof data?.statusCode === "number" ? data.statusCode : undefined,
-    message: typeof data?.message === "string" ? data.message : errorToMessage(error),
+    message: extractErrorMessage(record, data),
     headers:
       data?.responseHeaders && typeof data.responseHeaders === "object" ? (data.responseHeaders as Record<string, string>) : undefined,
   };
+}
+
+function normalizeRetryError(error: unknown): ErrorInfo {
+  if (!error || typeof error !== "object") return { message: String(error) };
+  const record = error as Record<string, unknown>;
+  const data = record.data && typeof record.data === "object" ? (record.data as Record<string, unknown>) : undefined;
+  return {
+    errorKeys: sortedKeys(record),
+    errorDataKeys: sortedKeys(data),
+    name: typeof record.name === "string" ? record.name : undefined,
+    providerID: typeof data?.providerID === "string" ? data.providerID : undefined,
+    providerSource: typeof data?.providerID === "string" ? "error" : undefined,
+    statusCode: typeof data?.statusCode === "number" ? data.statusCode : undefined,
+    message: extractErrorMessage(record, data),
+    headers:
+      data?.responseHeaders && typeof data.responseHeaders === "object" ? (data.responseHeaders as Record<string, string>) : undefined,
+  };
+}
+
+function normalizeStatusRetryError(status: Record<string, unknown>): ErrorInfo {
+  return {
+    errorKeys: sortedKeys(status),
+    message: typeof status.message === "string" ? status.message : undefined,
+  };
+}
+
+function diagnosticInfoForEvent(eventType: string, properties: Record<string, unknown> | undefined): ErrorInfo {
+  const sessionID = typeof properties?.sessionID === "string" ? properties.sessionID : undefined;
+  const attempt = typeof properties?.attempt === "number" ? properties.attempt : undefined;
+  const error = properties?.error;
+  const base = isRecord(error) ? normalizeRetryError(error) : {};
+  return {
+    ...base,
+    sessionID,
+    attempt,
+    eventType,
+    propertyKeys: sortedKeys(properties),
+    payload: properties,
+  };
+}
+
+function extractErrorMessage(record: Record<string, unknown>, data: Record<string, unknown> | undefined): string | undefined {
+  if (typeof data?.message === "string") return data.message;
+  if (typeof record.message === "string") return record.message;
+  if (typeof record.error === "string") return record.error;
+  return undefined;
+}
+
+function sortedKeys(record: Record<string, unknown> | undefined): string[] | undefined {
+  if (!record) return undefined;
+  const keys = Object.keys(record).sort();
+  return keys.length > 0 ? keys : undefined;
 }
 
 async function inferProvider(

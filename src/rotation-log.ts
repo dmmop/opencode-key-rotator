@@ -10,7 +10,8 @@ export type RotationDecision =
   | "ignored"
   | "error"
   | "fingerprint_mismatch"
-  | "all_keys_cooling_down";
+  | "all_keys_cooling_down"
+  | "diagnostic";
 
 export type RotationLogEntry = {
   timestamp: string;
@@ -23,6 +24,11 @@ export type RotationLogEntry = {
   statusCode?: number;
   message?: string;
   rateLimitHeaders?: Record<string, string>;
+  eventType?: string;
+  propertyKeys?: string[];
+  errorKeys?: string[];
+  errorDataKeys?: string[];
+  payload?: unknown;
   decision: RotationDecision;
   reason: string;
   activeAlias?: string;
@@ -34,7 +40,11 @@ const MAX_MESSAGE_LENGTH = 500;
 export function writeRotationLog(store: KeyStore, entry: RotationLogEntry): void {
   try {
     store.ensureKeysDir();
-    const line = JSON.stringify({ ...entry, message: sanitizeMessage(entry.message) });
+    const line = JSON.stringify({
+      ...entry,
+      message: sanitizeMessage(entry.message),
+      payload: sanitizePayload(entry.payload),
+    });
     fs.appendFileSync(store.paths.rotationLogFile, `${line}\n`, { mode: 0o600 });
     fs.chmodSync(store.paths.rotationLogFile, 0o600);
   } catch {
@@ -74,4 +84,21 @@ export function sanitizeRateLimitHeaders(headers: unknown): Record<string, strin
     }
   }
   return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function sanitizePayload(value: unknown, depth = 0): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") return sanitizeMessage(value);
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "bigint") return String(value);
+  if (depth >= 6) return "[truncated]";
+  if (Array.isArray(value)) return value.slice(0, 50).map((entry) => sanitizePayload(entry, depth + 1));
+  if (typeof value === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>).slice(0, 100)) {
+      result[key] = sanitizePayload(entry, depth + 1);
+    }
+    return result;
+  }
+  return String(value);
 }

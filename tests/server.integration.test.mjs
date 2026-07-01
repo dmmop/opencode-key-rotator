@@ -38,6 +38,7 @@ function createMockClient(dataDir, overrides = {}) {
       get: async () => ({ data: { model: "openai/gpt-4" } }),
     },
     session: {
+      prompt: async () => {},
       messages: async () => ({ data: [] }),
     },
     tui: {
@@ -77,6 +78,11 @@ function lastLogEntry(dataDir) {
   return JSON.parse(logLines[logLines.length - 1]);
 }
 
+function logEntries(dataDir) {
+  const logFile = path.join(dataDir, "keys", "rotation.log.jsonl");
+  return fs.readFileSync(logFile, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
+}
+
 test("server initialization falls back when path lookup hangs", async () => {
   const { dataDir } = tempDataDir();
   const client = createMockClient(dataDir, {
@@ -104,6 +110,29 @@ test("session.next.retried with attempt=1 and rotatable message rotates key", as
 
   const auth = readJson(path.join(dataDir, "auth.json"));
   assert.equal(auth.openai.key, "secondary-key");
+});
+
+test("session.status retry with attempt=1 and rotatable message rotates key", async () => {
+  const { dataDir } = tempDataDir();
+  setupStore(dataDir, "openai");
+
+  const { event } = await getEventHandler(dataDir);
+  await event({
+    event: {
+      type: "session.status",
+      properties: {
+        sessionID: "session-status-1",
+        status: { type: "retry", attempt: 1, message: "The usage limit has been reached", next: Date.now() + 1_000 },
+      },
+    },
+  });
+
+  const auth = readJson(path.join(dataDir, "auth.json"));
+  assert.equal(auth.openai.key, "secondary-key");
+
+  const entry = lastLogEntry(dataDir);
+  assert.equal(entry.decision, "rotated_on_retry");
+  assert.equal(entry.eventType, "session.status");
 });
 
 test("session.error with statusCode 429 rotates key", async () => {
@@ -178,6 +207,86 @@ test("session.next.retried with attempt !== 1 does not rotate", async () => {
 
   const auth = readJson(path.join(dataDir, "auth.json"));
   assert.equal(auth.openai.key, "primary-key");
+});
+
+test("session.next.retried logs diagnostics for unmatched payloads", async () => {
+  const { dataDir } = tempDataDir();
+  setupStore(dataDir, "openai");
+
+  const { event } = await getEventHandler(dataDir);
+  await event({
+    event: {
+      type: "session.next.retried",
+      properties: { sessionID: "session-diagnostic", attempt: 1, error: { name: "ProviderError", details: "usage capped" } },
+    },
+  });
+
+  const entry = lastLogEntry(dataDir);
+  assert.equal(entry.decision, "diagnostic");
+  assert.equal(entry.reason, "retry_error_did_not_match_rotation_patterns");
+  assert.equal(entry.eventType, "session.next.retried");
+  assert.equal(entry.sessionID, "session-diagnostic");
+  assert.equal(entry.attempt, 1);
+  assert.deepEqual(entry.propertyKeys, ["attempt", "error", "sessionID"]);
+  assert.deepEqual(entry.errorKeys, ["details", "name"]);
+});
+
+test("duplicate sessionID logs diagnostic after retry rotation", async () => {
+  const { dataDir } = tempDataDir();
+  setupStore(dataDir, "openai");
+
+  const { event } = await getEventHandler(dataDir);
+  const eventPayload = {
+    event: {
+      type: "session.next.retried",
+      properties: { sessionID: "session-dedup-diagnostic", attempt: 1, error: { message: "rate limit" } },
+    },
+  };
+
+  await event(eventPayload);
+  await event(eventPayload);
+
+  const entries = logEntries(dataDir);
+  assert.equal(entries.at(-2).decision, "rotated_on_retry");
+  assert.equal(entries.at(-1).decision, "diagnostic");
+  assert.equal(entries.at(-1).reason, "session_already_rotated_recently");
+});
+
+test("unhandled events are logged for diagnostics", async () => {
+  const { dataDir } = tempDataDir();
+  setupStore(dataDir, "openai");
+
+  const { event } = await getEventHandler(dataDir);
+  await event({
+    event: {
+      type: "session.provider.failed",
+      properties: {
+        sessionID: "session-unhandled",
+        attempt: 3,
+        error: { name: "ProviderError", message: "The usage limit has been reached", data: { statusCode: 429 } },
+      },
+    },
+  });
+
+  const entry = lastLogEntry(dataDir);
+  assert.equal(entry.decision, "diagnostic");
+  assert.equal(entry.reason, "unhandled_event");
+  assert.equal(entry.eventType, "session.provider.failed");
+  assert.equal(entry.sessionID, "session-unhandled");
+  assert.equal(entry.attempt, 3);
+  assert.deepEqual(entry.propertyKeys, ["attempt", "error", "sessionID"]);
+  assert.deepEqual(entry.errorKeys, ["data", "message", "name"]);
+  assert.deepEqual(entry.errorDataKeys, ["statusCode"]);
+  assert.equal(entry.message, "The usage limit has been reached");
+  assert.deepEqual(entry.payload, {
+    attempt: 3,
+    error: {
+      data: { statusCode: 429 },
+      message: "The usage limit has been reached",
+      name: "ProviderError",
+    },
+    sessionID: "session-unhandled",
+  });
 });
 
 test("unknown provider logs provider_unknown and does not rotate", async () => {
