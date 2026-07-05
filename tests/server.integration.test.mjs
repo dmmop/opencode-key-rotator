@@ -174,7 +174,7 @@ test("MessageAbortedError is logged as manual_abort and does not rotate", async 
   assert.equal(entry.reason, "manual_abort");
 });
 
-test("duplicate sessionID does not rotate twice", async () => {
+test("same session rotates until no provider keys are available", async () => {
   const { dataDir } = tempDataDir();
   setupStore(dataDir, "openai");
 
@@ -191,6 +191,10 @@ test("duplicate sessionID does not rotate twice", async () => {
 
   const auth = readJson(path.join(dataDir, "auth.json"));
   assert.equal(auth.openai.key, "secondary-key");
+
+  const entry = lastLogEntry(dataDir);
+  assert.equal(entry.decision, "all_keys_cooling_down");
+  assert.equal(entry.activeAlias, "secondary");
 });
 
 test("session.next.retried with attempt !== 1 does not rotate", async () => {
@@ -231,9 +235,10 @@ test("session.next.retried logs diagnostics for unmatched payloads", async () =>
   assert.deepEqual(entry.errorKeys, ["details", "name"]);
 });
 
-test("duplicate sessionID logs diagnostic after retry rotation", async () => {
+test("same session can rotate through a third provider key", async () => {
   const { dataDir } = tempDataDir();
   setupStore(dataDir, "openai");
+  addProviderKey(dataDir, "openai", "tertiary", "tertiary-key");
 
   const { event } = await getEventHandler(dataDir);
   const eventPayload = {
@@ -246,10 +251,13 @@ test("duplicate sessionID logs diagnostic after retry rotation", async () => {
   await event(eventPayload);
   await event(eventPayload);
 
+  const auth = readJson(path.join(dataDir, "auth.json"));
+  assert.equal(auth.openai.key, "tertiary-key");
+
   const entries = logEntries(dataDir);
-  assert.equal(entries.at(-2).decision, "rotated_on_retry");
-  assert.equal(entries.at(-1).decision, "diagnostic");
-  assert.equal(entries.at(-1).reason, "session_already_rotated_recently");
+  assert.equal(entries.at(-1).decision, "rotated_on_retry");
+  assert.equal(entries.at(-1).activeAlias, "secondary");
+  assert.equal(entries.at(-1).nextAlias, "tertiary");
 });
 
 test("unhandled events are logged for diagnostics", async () => {

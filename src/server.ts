@@ -38,9 +38,6 @@ type RotationRequest = {
   toastOnSkip: boolean;
 };
 
-// Track sessions for which we have already rotated a key, so we do not rotate
-// again when the final session.error arrives after retries.
-const rotatedSessions = new Map<string, number>();
 const CLIENT_CALL_TIMEOUT_MS = 1_000;
 const FAILED_ALIAS_COOLDOWN_MS = 2 * 60 * 1_000;
 const failedAliasCooldowns = new Map<string, Map<string, number>>();
@@ -111,11 +108,6 @@ async function handleSessionNextRetried(
     await writeDiagnosticLog(client, config, info, new Date().toISOString(), "retry_error_did_not_match_rotation_patterns");
     return;
   }
-  if (wasRotatedRecently(config, sessionID)) {
-    await writeDiagnosticLog(client, config, info, new Date().toISOString(), "session_already_rotated_recently");
-    return;
-  }
-
   const timestamp = new Date().toISOString();
 
   await rotateKeyForEvent(client, config, {
@@ -150,11 +142,6 @@ async function handleSessionStatus(
     await writeDiagnosticLog(client, config, info, new Date().toISOString(), "status_retry_did_not_match_rotation_patterns");
     return;
   }
-  if (wasRotatedRecently(config, sessionID)) {
-    await writeDiagnosticLog(client, config, info, new Date().toISOString(), "session_already_rotated_recently");
-    return;
-  }
-
   const timestamp = new Date().toISOString();
 
   await rotateKeyForEvent(client, config, {
@@ -220,16 +207,6 @@ async function rotateKeyForEvent(
   const store = request.store ?? (await createStoreForClient(client, config));
   if (!store) {
     if (request.toastOnSkip) await showToast(client, config, "Key rotation skipped", "OpenCode data path is unavailable.", "warning");
-    return;
-  }
-
-  if (request.sessionID && wasRotatedRecently(config, request.sessionID)) {
-    writeRotationLog(store, {
-      ...baseLogEntry(request.info, request.timestamp),
-      sessionID: request.sessionID,
-      decision: "diagnostic",
-      reason: "session_already_rotated_recently",
-    });
     return;
   }
 
@@ -308,7 +285,6 @@ async function rotateKeyForEvent(
   try {
     const result = store.switchProviderKey(providerID, nextAlias, "auto-rotate");
 
-    if (request.sessionID) markRotated(config, request.sessionID);
     writeRotationLog(store, {
       ...baseLogEntry(request.info, request.timestamp),
       decision: request.decision,
@@ -657,28 +633,5 @@ async function showToast(
     });
   } catch {
     console.warn(`[opencode-key-rotator] ${title}: ${message}`);
-  }
-}
-
-function markRotated(config: KeyRotatorConfig, sessionID: string): void {
-  rotatedSessions.set(sessionID, Date.now());
-  cleanupRotatedSessions(config);
-}
-
-function wasRotatedRecently(config: KeyRotatorConfig, sessionID: string | undefined): boolean {
-  if (!sessionID) return false;
-  const timestamp = rotatedSessions.get(sessionID);
-  if (!timestamp) return false;
-  if (Date.now() - timestamp > config.rotation.dedupTtlMs) {
-    rotatedSessions.delete(sessionID);
-    return false;
-  }
-  return true;
-}
-
-function cleanupRotatedSessions(config: KeyRotatorConfig): void {
-  const now = Date.now();
-  for (const [sessionID, timestamp] of rotatedSessions) {
-    if (now - timestamp > config.rotation.dedupTtlMs) rotatedSessions.delete(sessionID);
   }
 }

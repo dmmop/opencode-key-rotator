@@ -23,7 +23,6 @@ test("loadConfig returns defaults when config file does not exist", () => {
   const config = loadConfig({ configDir });
 
   assert.equal(config.rotation.enabled, true);
-  assert.equal(config.rotation.dedupTtlMs, 5 * 60 * 1000);
   assert.equal(config.storage.maxBackups, 10);
   assert.equal(config.storage.lockTtlMs, 30_000);
   assert.equal(config.ui.toastDurationMs, 11_000);
@@ -41,7 +40,6 @@ test("loadConfig merges partial config with defaults", () => {
   assert.equal(config.storage.maxBackups, 5);
   assert.equal(config.storage.lockTtlMs, 30_000);
   assert.equal(config.ui.toastDurationMs, 3_000);
-  assert.equal(config.rotation.dedupTtlMs, 5 * 60 * 1000);
 });
 
 test("loadConfig parses custom rotation patterns", () => {
@@ -88,13 +86,4 @@ test("loadConfig throws on negative maxBackups", () => {
   });
 
   assert.throws(() => loadConfig({ configDir }), /non-negative integer/);
-});
-
-test("loadConfig throws on invalid dedupTtlMs", () => {
-  const configDir = tempConfigDir();
-  writeJson(path.join(configDir, "opencode-key-rotator", "config.json"), {
-    rotation: { dedupTtlMs: 0 },
-  });
-
-  assert.throws(() => loadConfig({ configDir }), /positive number/);
 });

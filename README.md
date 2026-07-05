@@ -95,7 +95,6 @@ Create a sidecar config file at `~/.config/opencode/opencode-key-rotator/config.
 {
   "rotation": {
     "enabled": true,
-    "dedupTtlMs": 300000,
     "patterns": ["\\b429\\b", "rate\\s*limit", "quota", "resource exhausted", "usage limit", "insufficient quota"]
   },
   "storage": {

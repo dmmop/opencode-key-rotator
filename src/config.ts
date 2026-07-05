@@ -6,7 +6,6 @@ import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 export type KeyRotatorConfig = {
   rotation: {
     enabled: boolean;
-    dedupTtlMs: number;
     patterns: RegExp[];
   };
   storage: {
@@ -23,7 +22,6 @@ export const DEFAULT_ROTATION_PATTERNS = ["\\b429\\b", "rate\\s*limit", "quota",
 const DEFAULT_CONFIG: KeyRotatorConfig = {
   rotation: {
     enabled: true,
-    dedupTtlMs: 5 * 60 * 1000,
     patterns: DEFAULT_ROTATION_PATTERNS.map((source) => new RegExp(source, "i")),
   },
   storage: {
@@ -58,7 +56,6 @@ export function writeDefaultConfig(configDir: string): string {
   const defaultConfig = {
     rotation: {
       enabled: DEFAULT_CONFIG.rotation.enabled,
-      dedupTtlMs: DEFAULT_CONFIG.rotation.dedupTtlMs,
       patterns: DEFAULT_ROTATION_PATTERNS,
     },
     storage: {
@@ -97,7 +94,6 @@ function mergeConfig(raw: unknown): KeyRotatorConfig {
   return {
     rotation: {
       enabled: typeof rotation.enabled === "boolean" ? rotation.enabled : DEFAULT_CONFIG.rotation.enabled,
-      dedupTtlMs: positiveNumber(rotation.dedupTtlMs, DEFAULT_CONFIG.rotation.dedupTtlMs, "rotation.dedupTtlMs"),
       patterns: parsePatterns(rotation.patterns),
     },
     storage: {
@@ -149,7 +145,6 @@ function cloneConfig(config: KeyRotatorConfig): KeyRotatorConfig {
   return {
     rotation: {
       enabled: config.rotation.enabled,
-      dedupTtlMs: config.rotation.dedupTtlMs,
       patterns: config.rotation.patterns.map((pattern) => new RegExp(pattern.source, pattern.flags)),
     },
     storage: { ...config.storage },
