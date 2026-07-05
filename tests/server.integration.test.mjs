@@ -197,7 +197,7 @@ test("same session rotates until no provider keys are available", async () => {
   assert.equal(entry.activeAlias, "secondary");
 });
 
-test("session.next.retried with attempt !== 1 does not rotate", async () => {
+test("session.next.retried rotates on any attempt", async () => {
   const { dataDir } = tempDataDir();
   setupStore(dataDir, "openai");
 
@@ -210,7 +210,7 @@ test("session.next.retried with attempt !== 1 does not rotate", async () => {
   });
 
   const auth = readJson(path.join(dataDir, "auth.json"));
-  assert.equal(auth.openai.key, "primary-key");
+  assert.equal(auth.openai.key, "secondary-key");
 });
 
 test("session.next.retried logs diagnostics for unmatched payloads", async () => {

@@ -95,29 +95,14 @@ async function handleSessionNextRetried(
 ): Promise<void> {
   const sessionID = typeof properties?.sessionID === "string" ? properties.sessionID : undefined;
   const attempt = typeof properties?.attempt === "number" ? properties.attempt : undefined;
-  const error = properties?.error;
-  const info = normalizeRetryError(error);
+  const info = normalizeRetryError(properties?.error);
   info.sessionID = sessionID;
   info.attempt = attempt;
   info.eventType = "session.next.retried";
   info.propertyKeys = sortedKeys(properties);
   info.payload = properties;
 
-  if (!sessionID || attempt !== 1) return;
-  if (!info.message || !isRotatableMessage(info.message, config)) {
-    await writeDiagnosticLog(client, config, info, new Date().toISOString(), "retry_error_did_not_match_rotation_patterns");
-    return;
-  }
-  const timestamp = new Date().toISOString();
-
-  await rotateKeyForEvent(client, config, {
-    sessionID,
-    info,
-    timestamp,
-    decision: "rotated_on_retry",
-    unknownProviderReason: "rotatable_retry_without_provider_id",
-    toastOnSkip: false,
-  });
+  await retryHandler(client, config, info, "retry_error_did_not_match_rotation_patterns", "rotatable_retry_without_provider_id");
 }
 
 async function handleSessionStatus(
@@ -125,31 +110,39 @@ async function handleSessionStatus(
   config: KeyRotatorConfig,
   properties: Record<string, unknown> | undefined,
 ): Promise<void> {
-  const sessionID = typeof properties?.sessionID === "string" ? properties.sessionID : undefined;
   const status = isRecord(properties?.status) ? properties.status : undefined;
   if (!status || status.type !== "retry") return;
 
-  const attempt = typeof status.attempt === "number" ? status.attempt : undefined;
+  const sessionID = typeof properties?.sessionID === "string" ? properties.sessionID : undefined;
   const info = normalizeStatusRetryError(status);
   info.sessionID = sessionID;
-  info.attempt = attempt;
+  info.attempt = typeof status.attempt === "number" ? status.attempt : undefined;
   info.eventType = "session.status";
   info.propertyKeys = sortedKeys(properties);
   info.payload = properties;
 
-  if (!sessionID || attempt !== 1) return;
+  await retryHandler(client, config, info, "status_retry_did_not_match_rotation_patterns", "rotatable_status_retry_without_provider_id");
+}
+
+async function retryHandler(
+  client: Parameters<Plugin>[0]["client"],
+  config: KeyRotatorConfig,
+  info: ErrorInfo,
+  diagReason: string,
+  unknownReason: string,
+): Promise<void> {
+  if (!info.sessionID) return;
   if (!info.message || !isRotatableMessage(info.message, config)) {
-    await writeDiagnosticLog(client, config, info, new Date().toISOString(), "status_retry_did_not_match_rotation_patterns");
+    await writeDiagnosticLog(client, config, info, new Date().toISOString(), diagReason);
     return;
   }
-  const timestamp = new Date().toISOString();
 
   await rotateKeyForEvent(client, config, {
-    sessionID,
+    sessionID: info.sessionID,
     info,
-    timestamp,
+    timestamp: new Date().toISOString(),
     decision: "rotated_on_retry",
-    unknownProviderReason: "rotatable_status_retry_without_provider_id",
+    unknownProviderReason: unknownReason,
     toastOnSkip: false,
   });
 }
@@ -236,7 +229,7 @@ async function rotateKeyForEvent(
       decision: "no_alternative",
       reason: "provider_has_less_than_two_saved_keys",
     });
-    if (request.toastOnSkip) await showToast(client, config, "Key rotation skipped", `${providerID} has no alternative key.`, "warning");
+    if (request.toastOnSkip) await showToast(client, config, `Key rotation skipped · ${providerID}`, "No alternative key", "warning");
     return;
   }
 
@@ -277,8 +270,20 @@ async function rotateKeyForEvent(
       activeAlias: currentAlias,
       cooldownState: cooldownState.length ? cooldownState.join(", ") : undefined,
     });
-    if (request.toastOnSkip)
-      await showToast(client, config, "Key rotation skipped", `${providerID} has no available key outside cooldown.`, "warning");
+    {
+      const lines: string[] = [];
+      if (cooldowns) {
+        const nowMs = Date.now();
+        for (const [alias, expiresAt] of cooldowns) {
+          const remaining = Math.max(0, expiresAt - nowMs);
+          const min = Math.floor(remaining / 60_000);
+          const sec = Math.floor((remaining % 60_000) / 1_000);
+          lines.push(`${alias}: ${min > 0 ? `${min}m ${sec}s` : `${sec}s`}`);
+        }
+      }
+      const msg = lines.join("\n");
+      await showToast(client, config, `Key rotation skipped · ${providerID}`, msg, "warning");
+    }
     return;
   }
 
@@ -295,8 +300,8 @@ async function rotateKeyForEvent(
     await showToast(
       client,
       config,
-      "Key rotated",
-      `${providerID}: ${result.previousAlias ?? "unknown"} -> ${result.activeAlias}`,
+      `Key rotated · ${providerID}`,
+      `${result.previousAlias ?? "unknown"} -> ${result.activeAlias}`,
       "success",
     );
   } catch (rotationError) {
@@ -426,7 +431,7 @@ async function logRotationError(
         : "unexpected_rotation_error",
     activeAlias,
   });
-  await showToast(client, config, "Key rotation failed", sanitizeMessage(errorMessage) ?? "Unknown error", "error");
+  await showToast(client, config, `Key rotation failed · ${providerID}`, sanitizeMessage(errorMessage) ?? "Unknown error", "error");
 }
 
 function normalizeError(error: unknown): ErrorInfo {
