@@ -3,7 +3,6 @@ export type KeyStoreErrorCode =
   | "BUSY"
   | "AUTH_MISSING"
   | "AUTH_INVALID"
-  | "BACKUP_FAILED"
   | "LOCK_RACE"
   | "INVALID_INPUT";
 

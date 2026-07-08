@@ -9,7 +9,6 @@ export type KeyRotatorConfig = {
     patterns: RegExp[];
   };
   storage: {
-    maxBackups: number;
     lockTtlMs: number;
   };
   ui: {
@@ -25,7 +24,6 @@ const DEFAULT_CONFIG: KeyRotatorConfig = {
     patterns: DEFAULT_ROTATION_PATTERNS.map((source) => new RegExp(source, "i")),
   },
   storage: {
-    maxBackups: 10,
     lockTtlMs: 30_000,
   },
   ui: {
@@ -59,7 +57,6 @@ export function writeDefaultConfig(configDir: string): string {
       patterns: DEFAULT_ROTATION_PATTERNS,
     },
     storage: {
-      maxBackups: DEFAULT_CONFIG.storage.maxBackups,
       lockTtlMs: DEFAULT_CONFIG.storage.lockTtlMs,
     },
     ui: {
@@ -97,7 +94,6 @@ function mergeConfig(raw: unknown): KeyRotatorConfig {
       patterns: parsePatterns(rotation.patterns),
     },
     storage: {
-      maxBackups: nonNegativeNumber(storage.maxBackups, DEFAULT_CONFIG.storage.maxBackups, "storage.maxBackups"),
       lockTtlMs: positiveNumber(storage.lockTtlMs, DEFAULT_CONFIG.storage.lockTtlMs, "storage.lockTtlMs"),
     },
     ui: {
@@ -125,14 +121,6 @@ function positiveNumber(value: unknown, fallback: number, path: string): number 
   if (value === undefined) return fallback;
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     throw new Error(`${path} must be a positive number`);
-  }
-  return value;
-}
-
-function nonNegativeNumber(value: unknown, fallback: number, path: string): number {
-  if (value === undefined) return fallback;
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || !Number.isInteger(value)) {
-    throw new Error(`${path} must be a non-negative integer`);
   }
   return value;
 }

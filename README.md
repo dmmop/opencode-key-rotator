@@ -16,7 +16,7 @@ Automatically swaps to the next saved key when OpenCode encounters rate limits (
 - **TUI key manager** — interactive terminal UI to manage provider keys with per-provider grouping
 - **OpenCode plugin** — integrates as a server plugin with no manual setup after initial configuration
 - **Persistent storage** — keys and rotation logs stored in the XDG data directory
-- **Configurable** — customize rotation patterns, dedup window, backups, and toast duration via sidecar config
+- **Configurable** — customize rotation patterns, lock TTL, and toast duration via sidecar config
 - **Secure** — atomic writes, restrictive permissions, and log sanitization for credentials
 
 ## Installation
@@ -98,7 +98,6 @@ Create a sidecar config file at `~/.config/opencode/opencode-key-rotator/config.
     "patterns": ["\\b429\\b", "rate\\s*limit", "quota", "resource exhausted", "usage limit", "insufficient quota"]
   },
   "storage": {
-    "maxBackups": 10,
     "lockTtlMs": 30000
   },
   "ui": {
@@ -119,7 +118,7 @@ The config file supports JSONC (comments and trailing commas). Resolution order:
 3. The provider is inferred from session messages first, then from the configured model.
 4. If at least two keys are saved for the provider, the plugin switches to the next alias in a round-robin cycle.
 5. If a rotated key fails on the next attempt, that alias enters a 2-minute cooldown and is skipped during subsequent rotations.
-6. Before switching, the current credentials are saved under the previous alias so you can roll back.
+6. Before switching, the current credentials are saved under the previous alias.
 7. Every decision is recorded in `~/.local/share/opencode/keys/rotation.log.jsonl`.
 
 ## Data layout
@@ -131,7 +130,6 @@ The config file supports JSONC (comments and trailing commas). Resolution order:
     active.json                    # Active alias metadata per provider
     rotation.log.jsonl             # Rotation decisions (JSON Lines)
     .lock                          # Concurrency lock file
-    backups/                       # auth.json backups before rotation
     <providerID>/                  # e.g. openai/, anthropic/
       <alias>.json                 # Saved credential snapshots
 ```

@@ -23,7 +23,6 @@ test("loadConfig returns defaults when config file does not exist", () => {
   const config = loadConfig({ configDir });
 
   assert.equal(config.rotation.enabled, true);
-  assert.equal(config.storage.maxBackups, 10);
   assert.equal(config.storage.lockTtlMs, 30_000);
   assert.equal(config.ui.toastDurationMs, 11_000);
   assert.equal(config.rotation.patterns.length, DEFAULT_ROTATION_PATTERNS.length);
@@ -32,13 +31,12 @@ test("loadConfig returns defaults when config file does not exist", () => {
 test("loadConfig merges partial config with defaults", () => {
   const configDir = tempConfigDir();
   writeJson(path.join(configDir, "opencode-key-rotator", "config.json"), {
-    storage: { maxBackups: 5 },
+    storage: { lockTtlMs: 5_000 },
     ui: { toastDurationMs: 3_000 },
   });
 
   const config = loadConfig({ configDir });
-  assert.equal(config.storage.maxBackups, 5);
-  assert.equal(config.storage.lockTtlMs, 30_000);
+  assert.equal(config.storage.lockTtlMs, 5_000);
   assert.equal(config.ui.toastDurationMs, 3_000);
 });
 
@@ -79,11 +77,11 @@ test("loadConfig throws on invalid regex pattern", () => {
   assert.throws(() => loadConfig({ configDir }), /not a valid regex/);
 });
 
-test("loadConfig throws on negative maxBackups", () => {
+test("loadConfig throws on negative lockTtlMs", () => {
   const configDir = tempConfigDir();
   writeJson(path.join(configDir, "opencode-key-rotator", "config.json"), {
-    storage: { maxBackups: -1 },
+    storage: { lockTtlMs: -1 },
   });
 
-  assert.throws(() => loadConfig({ configDir }), /non-negative integer/);
+  assert.throws(() => loadConfig({ configDir }), /positive number/);
 });

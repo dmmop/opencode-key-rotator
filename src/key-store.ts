@@ -50,8 +50,6 @@ export type SaveResult = KeyAlias & {
 
 export type KeyStore = ReturnType<typeof createKeyStore>;
 
-const DEFAULT_MAX_AUTH_BACKUPS = 10;
-const DEFAULT_LOCK_TTL_MS = 30_000;
 const SAFE_SEGMENT = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?$/;
 const RESERVED_SEGMENTS = new Set(["backups", ".lock"]);
 
@@ -220,7 +218,7 @@ export function createKeyStore(dataDir: string, config?: KeyRotatorConfig) {
   function switchProviderKey(providerID: string, alias: string, reason = "key-switch"): SwitchResult {
     validateProviderID(providerID);
     validateAlias(alias);
-    return withLock(() => switchProviderKeyUnlocked(providerID, alias, reason, true));
+    return withLock(() => switchProviderKeyUnlocked(providerID, alias, true));
   }
 
   function rotateProviderKey(providerID: string): SwitchResult | undefined {
@@ -233,7 +231,7 @@ export function createKeyStore(dataDir: string, config?: KeyRotatorConfig) {
       const currentAlias = active.providers[providerID]?.alias;
       const currentIndex = currentAlias ? keys.findIndex((entry) => entry.alias === currentAlias) : -1;
       const next = keys[(currentIndex + 1 + keys.length) % keys.length];
-      return switchProviderKeyUnlocked(providerID, next.alias, "auto-rotate", true);
+      return switchProviderKeyUnlocked(providerID, next.alias, true);
     });
   }
 
@@ -247,47 +245,7 @@ export function createKeyStore(dataDir: string, config?: KeyRotatorConfig) {
     return fs.existsSync(keyFilePath(providerID, alias));
   }
 
-  function backupAuth(reason: string): string {
-    ensureKeysDir();
-    fs.mkdirSync(paths.backupsDir, { recursive: true, mode: 0o700 });
-    chmodIfExists(paths.backupsDir, 0o700);
-
-    if (!fs.existsSync(paths.authFile)) {
-      throw new KeyStoreError("AUTH_MISSING", "Cannot back up auth.json because it does not exist");
-    }
-
-    const safeReason = reason.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "auth-write";
-    const backupFile = path.join(
-      paths.backupsDir,
-      `auth-${timestampForFile()}-${process.pid}-${process.hrtime.bigint()}-${safeReason}.json`,
-    );
-    try {
-      fs.copyFileSync(paths.authFile, backupFile, fs.constants.COPYFILE_EXCL);
-      chmodIfExists(backupFile, 0o600);
-      return backupFile;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new KeyStoreError("BACKUP_FAILED", `Failed to back up auth.json: ${message}`);
-    }
-  }
-
-  function pruneAuthBackups(maxBackups = resolvedConfig.storage.maxBackups): void {
-    if (!fs.existsSync(paths.backupsDir)) return;
-    const backups = fs
-      .readdirSync(paths.backupsDir, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && /^auth-.*\.json$/.test(entry.name))
-      .map((entry) => {
-        const file = path.join(paths.backupsDir, entry.name);
-        return { file, mtimeMs: fs.statSync(file).mtimeMs };
-      })
-      .sort((left, right) => right.mtimeMs - left.mtimeMs);
-
-    for (const backup of backups.slice(maxBackups)) {
-      fs.rmSync(backup.file, { force: true });
-    }
-  }
-
-  function switchProviderKeyUnlocked(providerID: string, alias: string, reason: string, persistCurrent: boolean): SwitchResult {
+  function switchProviderKeyUnlocked(providerID: string, alias: string, persistCurrent: boolean): SwitchResult {
     const active = readActiveState();
     const previous = active.providers[providerID];
     const previousAlias = previous?.alias;
@@ -313,13 +271,11 @@ export function createKeyStore(dataDir: string, config?: KeyRotatorConfig) {
     const next = readJsonObject(keyFilePath(providerID, alias), `key '${providerID}/${alias}'`);
     const nextFingerprint = calculateFingerprint(next);
     const auth = readAuthRequired();
-    backupAuth(reason);
     auth[providerID] = next;
     writeJsonAtomic(paths.authFile, auth);
 
     active.providers[providerID] = activeProvider(alias, nextFingerprint);
     writeJsonAtomic(paths.activeFile, active);
-    pruneAuthBackups();
 
     return { providerID, previousAlias, activeAlias: alias };
   }
@@ -412,8 +368,6 @@ export function createKeyStore(dataDir: string, config?: KeyRotatorConfig) {
     rotateProviderKey,
     hasAlternativeKey,
     keyExists,
-    backupAuth,
-    pruneAuthBackups,
     calculateFingerprint,
   };
 }
@@ -426,7 +380,6 @@ function createKeyStorePaths(dataDir: string) {
     authFile: path.join(resolvedDataDir, "auth.json"),
     keysDir,
     activeFile: path.join(keysDir, "active.json"),
-    backupsDir: path.join(keysDir, "backups"),
     lockFile: path.join(keysDir, ".lock"),
     rotationLogFile: path.join(keysDir, "rotation.log.jsonl"),
   };
@@ -490,10 +443,6 @@ function readJsonObject(file: string, label: string): JsonObject {
   }
   if (!isJsonObject(parsed)) throw new KeyStoreError("AUTH_INVALID", `${label} must contain a JSON object`);
   return parsed;
-}
-
-function timestampForFile(): string {
-  return new Date().toISOString().replace(/[-:]/g, "").replace(/\./g, "");
 }
 
 function chmodIfExists(file: string, mode: number): void {

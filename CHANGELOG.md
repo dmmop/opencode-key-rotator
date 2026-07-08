@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `createKeyStore` accepts an optional `KeyRotatorConfig` for configurable backups and lock TTL.
+- `createKeyStore` accepts an optional `KeyRotatorConfig` for configurable lock TTL.
 - `server` and `tui` plugins load configuration and use configurable rotation patterns, dedup TTL, and toast duration.
 
 ### Fixed
