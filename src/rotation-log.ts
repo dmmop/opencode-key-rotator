@@ -73,7 +73,10 @@ function rotateLogIfNeeded(logFile: string, nextWriteBytes: number): void {
 }
 
 function uniqueRotatedLogFile(logFile: string): string {
-  const timestamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  const timestamp = new Date()
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}Z$/, "Z");
   const base = logFile.replace(/\.jsonl$/, `.${timestamp}.jsonl`);
   if (!fs.existsSync(base)) return base;
   for (let index = 1; ; index += 1) {
