@@ -28,3 +28,26 @@ test("last rotation decision skips manual abort traces", () => {
   assert.equal(lastDecision?.decision, "rotated");
   assert.equal(lastDecision?.providerID, "openai");
 });
+
+test("rotation log rolls over at 50 MiB", () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-key-rotator-log-"));
+  const store = createKeyStore(dataDir);
+  store.ensureKeysDir();
+
+  fs.writeFileSync(store.paths.rotationLogFile, "");
+  fs.truncateSync(store.paths.rotationLogFile, 50 * 1024 * 1024);
+
+  writeRotationLog(store, {
+    timestamp: "2026-01-01T00:00:00.000Z",
+    providerID: "openai",
+    decision: "rotated",
+    reason: "matched_rotation_patterns",
+  });
+
+  const logDir = path.dirname(store.paths.rotationLogFile);
+  const rotatedLogs = fs.readdirSync(logDir).filter((name) => /^rotation\.log\.\d{8}T\d{6}Z\.jsonl$/.test(name));
+
+  assert.equal(rotatedLogs.length, 1);
+  assert.ok(fs.statSync(store.paths.rotationLogFile).size < 1024);
+  assert.equal(readLastRotationDecision(store)?.decision, "rotated");
+});

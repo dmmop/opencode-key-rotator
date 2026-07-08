@@ -41,6 +41,7 @@ export type RotationLogEntry = {
 };
 
 const MAX_MESSAGE_LENGTH = 500;
+const MAX_ROTATION_LOG_BYTES = 50 * 1024 * 1024;
 
 export function writeRotationLog(store: KeyStore, entry: RotationLogEntry): void {
   try {
@@ -50,10 +51,34 @@ export function writeRotationLog(store: KeyStore, entry: RotationLogEntry): void
       message: sanitizeMessage(entry.message),
       payload: sanitizePayload(entry.payload),
     });
+    rotateLogIfNeeded(store.paths.rotationLogFile, Buffer.byteLength(line) + 1);
     fs.appendFileSync(store.paths.rotationLogFile, `${line}\n`, { mode: 0o600 });
     fs.chmodSync(store.paths.rotationLogFile, 0o600);
   } catch {
     // Diagnostics must never break OpenCode usage.
+  }
+}
+
+function rotateLogIfNeeded(logFile: string, nextWriteBytes: number): void {
+  try {
+    const currentBytes = fs.existsSync(logFile) ? fs.statSync(logFile).size : 0;
+    if (currentBytes + nextWriteBytes <= MAX_ROTATION_LOG_BYTES) return;
+
+    const rotatedFile = uniqueRotatedLogFile(logFile);
+    fs.renameSync(logFile, rotatedFile);
+    fs.chmodSync(rotatedFile, 0o600);
+  } catch {
+    // Best-effort rotation. If it fails, keep logging to the current file.
+  }
+}
+
+function uniqueRotatedLogFile(logFile: string): string {
+  const timestamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  const base = logFile.replace(/\.jsonl$/, `.${timestamp}.jsonl`);
+  if (!fs.existsSync(base)) return base;
+  for (let index = 1; ; index += 1) {
+    const candidate = logFile.replace(/\.jsonl$/, `.${timestamp}.${index}.jsonl`);
+    if (!fs.existsSync(candidate)) return candidate;
   }
 }
 
