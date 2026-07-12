@@ -2,120 +2,76 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { applyEdits, getNodeValue, modify, parseTree, printParseErrorCode, type ParseError } from "jsonc-parser";
-import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 import { writeDefaultConfig } from "./config.js";
+import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 
-export type InstallerAction = "init" | "remove";
-
+export type InstallerAction = "init" | "uninstall";
 export type ConfigEditResult = {
-  kind: "opencode" | "tui" | "key-rotator";
+  kind: "opencode" | "key-rotator";
   path: string;
-  existed: boolean;
   changed: boolean;
   message: string;
 };
-
-export type InstallOptions = {
-  action: InstallerAction;
-  spec: string;
-  configDir?: string;
-};
+export type InstallOptions = { action: InstallerAction; configDir?: string };
 
 const PACKAGE_NAME = "opencode-key-rotator";
-const OPENCODE_SCHEMA_URL = "https://opencode.ai/config.json";
-const TUI_SCHEMA_URL = "https://opencode.ai/tui.json";
 const JSON_FORMATTING = { insertSpaces: true, tabSize: 2, eol: "\n" };
 
 export function updateOpenCodeConfigs(options: InstallOptions): ConfigEditResult[] {
   const configDir = resolveConfigDir(options.configDir);
-  fs.mkdirSync(configDir, { recursive: true });
+  if (options.action === "init") fs.mkdirSync(configDir, { recursive: true });
+  const result = updateOpenCodeConfig(path.join(configDir, "opencode.json"), options.action);
+  if (options.action === "uninstall") return [result];
 
-  const results: ConfigEditResult[] = [
-    updateConfigFile({
-      kind: "opencode",
-      file: path.join(configDir, "opencode.json"),
-      schema: OPENCODE_SCHEMA_URL,
-      spec: options.spec,
-      action: options.action,
-    }),
-    updateConfigFile({
-      kind: "tui",
-      file: path.join(configDir, "tui.json"),
-      schema: TUI_SCHEMA_URL,
-      spec: options.spec,
-      action: options.action,
-    }),
-  ];
-
-  if (options.action === "init") {
-    const keyRotatorConfigFile = path.join(configDir, "opencode-key-rotator", "config.json");
-    const existed = fs.existsSync(keyRotatorConfigFile);
-    writeDefaultConfig(configDir);
-    results.push({
+  const sidecar = path.join(configDir, PACKAGE_NAME, "config.json");
+  const existed = fs.existsSync(sidecar);
+  writeDefaultConfig(configDir);
+  return [
+    result,
+    {
       kind: "key-rotator",
-      path: keyRotatorConfigFile,
-      existed,
-      changed: true,
-      message: existed ? "Updated key-rotator config with defaults" : "Created default key-rotator config",
-    });
-  }
-
-  return results;
+      path: sidecar,
+      changed: !existed,
+      message: existed ? "Preserved existing key-rotator config" : "Created default key-rotator config",
+    },
+  ];
 }
 
-export function defaultPluginSpec(): string {
-  return PACKAGE_NAME;
-}
+function updateOpenCodeConfig(file: string, action: InstallerAction): ConfigEditResult {
+  const existed = fs.existsSync(file);
+  if (!existed && action === "uninstall") return { kind: "opencode", path: file, changed: false, message: "Plugin was not installed" };
 
-function updateConfigFile(params: {
-  kind: ConfigEditResult["kind"];
-  file: string;
-  schema: string;
-  spec: string;
-  action: InstallerAction;
-}): ConfigEditResult {
-  const existed = fs.existsSync(params.file);
-  if (!existed && params.action === "remove") {
-    return {
-      kind: params.kind,
-      path: params.file,
-      existed,
-      changed: false,
-      message: `${params.kind} config did not include ${params.spec}`,
-    };
-  }
-  const current = existed ? fs.readFileSync(params.file, "utf8") : undefined;
-  const next =
-    current === undefined
-      ? createConfig(params.schema, params.action === "init" ? params.spec : undefined)
-      : updateExistingConfig(current, params.spec, params.action);
+  const current = existed ? fs.readFileSync(file, "utf8") : undefined;
+  const next = current === undefined ? createConfig() : editConfig(current, action);
   const changed = next !== current;
-  if (changed) writeTextAtomic(params.file, next);
-
-  return {
-    kind: params.kind,
-    path: params.file,
-    existed,
-    changed,
-    message: buildMessage(params.action, params.kind, params.spec, changed),
-  };
+  if (changed) writeTextAtomic(file, next);
+  const message =
+    action === "init"
+      ? changed
+        ? `Added ${PACKAGE_NAME} to opencode config`
+        : `${PACKAGE_NAME} is already installed`
+      : changed
+        ? `Uninstalled ${PACKAGE_NAME} from opencode config`
+        : `${PACKAGE_NAME} was not installed`;
+  return { kind: "opencode", path: file, changed, message };
 }
 
-function updateExistingConfig(content: string, spec: string, action: InstallerAction): string {
+function editConfig(content: string, action: InstallerAction): string {
   const root = parseConfigRoot(content);
   const config = getNodeValue(root) as Record<string, unknown>;
-  const plugins = Array.isArray(config.plugin) ? config.plugin : [];
-
+  const plugins = Array.isArray(config.plugins) ? config.plugins : [];
   if (action === "init") {
-    if (plugins.some((plugin) => pluginMatches(plugin, spec))) return content;
-    const nextPlugins = [...plugins, spec];
-    return applyConfigEdit(content, ["plugin"], nextPlugins);
+    if (plugins.some(isKeyRotator)) return content;
+    return applyConfigEdit(content, ["plugins"], [...plugins, PACKAGE_NAME]);
   }
+  const filtered = plugins.filter((plugin) => !isKeyRotator(plugin));
+  if (filtered.length === plugins.length) return content;
+  return applyConfigEdit(content, ["plugins"], filtered.length > 0 ? filtered : undefined);
+}
 
-  const nextPlugins = plugins.filter((plugin) => !pluginMatches(plugin, spec));
-  if (nextPlugins.length === plugins.length) return content;
-  if (nextPlugins.length === 0) return applyConfigEdit(content, ["plugin"], undefined);
-  return applyConfigEdit(content, ["plugin"], nextPlugins);
+function isKeyRotator(plugin: unknown): boolean {
+  const value = typeof plugin === "object" && plugin !== null && "package" in plugin ? plugin.package : plugin;
+  return typeof value === "string" && (value === PACKAGE_NAME || value.endsWith(`/${PACKAGE_NAME}`));
 }
 
 function parseConfigRoot(content: string) {
@@ -130,18 +86,11 @@ function parseConfigRoot(content: string) {
 }
 
 function applyConfigEdit(content: string, jsonPath: Array<string | number>, value: unknown): string {
-  const edits = modify(content, jsonPath, value, { formattingOptions: JSON_FORMATTING });
-  return applyEdits(content, edits);
+  return applyEdits(content, modify(content, jsonPath, value, { formattingOptions: JSON_FORMATTING }));
 }
 
-function pluginMatches(plugin: unknown, spec: string): boolean {
-  const value = Array.isArray(plugin) ? plugin[0] : plugin;
-  return typeof value === "string" && (value === spec || value === PACKAGE_NAME || value.endsWith(`/${PACKAGE_NAME}`));
-}
-
-function createConfig(schema: string, spec: string | undefined): string {
-  const plugin = spec ? `,\n  "plugin": [\n    ${JSON.stringify(spec)}\n  ]` : "";
-  return `{\n  "$schema": ${JSON.stringify(schema)}${plugin}\n}\n`;
+function createConfig(): string {
+  return `{\n  "$schema": "https://opencode.ai/config.json",\n  "plugins": [\n    "${PACKAGE_NAME}"\n  ]\n}\n`;
 }
 
 function writeTextAtomic(file: string, value: string): void {
@@ -153,18 +102,9 @@ function writeTextAtomic(file: string, value: string): void {
 }
 
 function resolveConfigDir(configDir: string | undefined): string {
-  if (configDir) return expandHome(configDir);
-  if (process.env.OPENCODE_CONFIG_DIR) return expandHome(process.env.OPENCODE_CONFIG_DIR);
-  return getOpencodeRuntimeDirs().configDir;
-}
-
-function expandHome(value: string): string {
+  const value = configDir ?? process.env.OPENCODE_CONFIG_DIR;
+  if (!value) return getOpencodeRuntimeDirs().configDir;
   if (value === "~") return os.homedir();
   if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
   return value;
-}
-
-function buildMessage(action: InstallerAction, kind: string, spec: string, changed: boolean): string {
-  if (action === "init") return changed ? `Added ${spec} to ${kind} config` : `${kind} config already includes ${spec}`;
-  return changed ? `Removed ${spec} from ${kind} config` : `${kind} config did not include ${spec}`;
 }

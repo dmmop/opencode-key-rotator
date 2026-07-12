@@ -38,6 +38,15 @@ test("switch preserves the OpenCode connection label and updates active metadata
   const store = createKeyStore(dataDir);
   store.saveCurrentProviderKey("openai", "one", true);
   const db = new DatabaseSync(path.join(dataDir, "opencode-next.db"));
+  db.prepare("UPDATE credential SET connector_id = ?, method_id = ?, active = ? WHERE id = ?").run("connector", "method", 1, "cred_one");
+  db.prepare("INSERT INTO credential VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?)").run(
+    "cred_older",
+    "openai",
+    "Older connection",
+    JSON.stringify({ type: "key", key: "older" }),
+    0,
+    0,
+  );
   db.prepare("INSERT INTO opencode_key_rotator_alias VALUES (?, ?, ?, ?, ?)").run(
     "openai",
     "two",
@@ -49,6 +58,11 @@ test("switch preserves the OpenCode connection label and updates active metadata
   store.switchProviderKey("openai", "two");
   const check = new DatabaseSync(path.join(dataDir, "opencode-next.db"));
   assert.equal(check.prepare("SELECT label FROM credential WHERE integration_id = 'openai'").get().label, "Connection");
+  const credential = check.prepare("SELECT connector_id, method_id, active FROM credential WHERE id = 'cred_one'").get();
+  assert.equal(credential.connector_id, "connector");
+  assert.equal(credential.method_id, "method");
+  assert.equal(credential.active, 1);
+  assert.equal(check.prepare("SELECT COUNT(*) AS count FROM credential WHERE integration_id = 'openai'").get().count, 2);
   assert.equal(store.readActiveAliases().openai, "two");
   check.close();
 });
@@ -61,13 +75,57 @@ test("active aliases cannot be deleted and alias collisions are rejected", () =>
   assert.throws(() => store.renameProviderKey("openai", "one", "one"), { code: "ALIAS_COLLISION" });
 });
 
-test("rejects a busy lock and accepts a stale lock", () => {
+test("status reports stale active metadata without deleting it", () => {
   const dataDir = fixture();
   const store = createKeyStore(dataDir);
-  fs.mkdirSync(path.join(dataDir, "keys"), { recursive: true });
-  fs.writeFileSync(path.join(dataDir, "keys", ".lock"), "{}");
-  assert.throws(() => store.saveCurrentProviderKey("openai", "one", true), /busy/i);
-  const stale = new Date(Date.now() - 60_000);
-  fs.utimesSync(path.join(dataDir, "keys", ".lock"), stale, stale);
-  assert.doesNotThrow(() => store.saveCurrentProviderKey("openai", "one", true));
+  store.saveCurrentProviderKey("openai", "one", true);
+  const db = new DatabaseSync(path.join(dataDir, "opencode-next.db"));
+  db.prepare("UPDATE credential SET value = ? WHERE integration_id = ?").run(JSON.stringify({ type: "key", key: "changed" }), "openai");
+  db.close();
+
+  const status = store.getStatuses()[0];
+  assert.equal(status.activeAlias, "one");
+  assert.equal(status.synced, false);
+
+  const check = new DatabaseSync(path.join(dataDir, "opencode-next.db"));
+  assert.equal(check.prepare("SELECT COUNT(*) AS count FROM opencode_key_rotator_active").get().count, 1);
+  check.close();
+});
+
+test("rename rejects a missing source alias", () => {
+  const store = createKeyStore(fixture());
+  assert.throws(() => store.renameProviderKey("openai", "missing", "renamed"), { code: "NOT_CONNECTED" });
+});
+
+test("automatic rotation preserves the previous alias and active credential row", () => {
+  const dataDir = fixture();
+  const store = createKeyStore(dataDir);
+  store.saveCurrentProviderKey("openai", "one", true);
+  const db = new DatabaseSync(path.join(dataDir, "opencode-next.db"));
+  db.prepare("INSERT INTO opencode_key_rotator_alias VALUES (?, ?, ?, ?, ?)").run(
+    "openai",
+    "two",
+    JSON.stringify({ type: "key", key: "two" }),
+    2,
+    2,
+  );
+  db.close();
+
+  assert.deepEqual(store.switchProviderKeyToNext("openai", ["two"]), {
+    providerID: "openai",
+    previousAlias: "one",
+    activeAlias: "two",
+  });
+
+  const check = new DatabaseSync(path.join(dataDir, "opencode-next.db"));
+  assert.equal(
+    check.prepare("SELECT value FROM credential WHERE id = 'cred_one'").get().value,
+    JSON.stringify({ type: "key", key: "two" }),
+  );
+  assert.equal(
+    check.prepare("SELECT value FROM opencode_key_rotator_alias WHERE integration_id = ? AND alias = ?").get("openai", "one").value,
+    JSON.stringify({ type: "key", key: "one" }),
+  );
+  assert.equal(check.prepare("SELECT COUNT(*) AS count FROM credential WHERE integration_id = 'openai'").get().count, 1);
+  check.close();
 });

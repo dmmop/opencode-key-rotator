@@ -3,15 +3,14 @@ import { resolveOpencodeDataDir } from "./opencode-runtime-paths.js";
 import { KeyStoreError } from "./errors.js";
 import { createKeyStore, type KeyStatus, type KeyStore } from "./key-store.js";
 import { readLastRotationDecision } from "./rotation-log.js";
-import { loadConfig, type KeyRotatorConfig } from "./config.js";
 
 const id = "opencode-key-rotator";
+const TOAST_DURATION_MS = 11_000;
 
 const tui: TuiPlugin = async (api) => {
-  const config = loadConfigForApi(api);
-  registerSlashCommand(api, "key-save", "Save current provider key", () => openSaveKey(api, config));
-  registerSlashCommand(api, "key-switch", "Switch active provider key", () => openKeySwitch(api, config));
-  registerSlashCommand(api, "key-status", "Show key rotation status", () => openKeyStatus(api, config));
+  registerSlashCommand(api, "key-save", "Save current provider key", () => openSaveKey(api));
+  registerSlashCommand(api, "key-switch", "Switch active provider key", () => openKeySwitch(api));
+  registerSlashCommand(api, "key-status", "Show key rotation status", () => openKeyStatus(api));
 };
 
 function registerSlashCommand(api: TuiPluginApi, name: string, title: string, run: () => void): void {
@@ -38,10 +37,10 @@ function registerSlashCommand(api: TuiPluginApi, name: string, title: string, ru
   });
 }
 
-function openSaveKey(api: TuiPluginApi, config: KeyRotatorConfig): void {
-  const store = getStore(api, config);
+function openSaveKey(api: TuiPluginApi): void {
+  const store = getStore(api);
   if (!store) return;
-  const providers = safeCall(() => store.listProviderIDs(), api, config);
+  const providers = safeCall(() => store.listProviderIDs(), api);
   if (!providers || providers.length === 0) {
     showAlert(api, "No providers", "No providers were found in auth.json or saved keys.");
     return;
@@ -52,12 +51,12 @@ function openSaveKey(api: TuiPluginApi, config: KeyRotatorConfig): void {
       title: "Save provider key",
       placeholder: "Choose provider",
       options: providers.map((providerID) => ({ title: providerID, value: providerID })),
-      onSelect: (option) => askAlias(api, config, store, option.value),
+      onSelect: (option) => askAlias(api, store, option.value),
     }),
   );
 }
 
-function askAlias(api: TuiPluginApi, config: KeyRotatorConfig, store: KeyStore, providerID: string): void {
+function askAlias(api: TuiPluginApi, store: KeyStore, providerID: string): void {
   api.ui.dialog.replace(() =>
     api.ui.DialogPrompt({
       title: `Alias for ${providerID}`,
@@ -70,70 +69,47 @@ function askAlias(api: TuiPluginApi, config: KeyRotatorConfig, store: KeyStore, 
           return;
         }
 
-        const preview = safeCall(() => store.previewCurrentProviderKey(providerID, cleanAlias), api, config);
-        if (!preview) return;
-        if (preview.exists && preview.fingerprintChanged) {
-          confirmFingerprintOverwrite(api, config, store, providerID, cleanAlias, preview.fingerprint.stability);
+        const exists = safeCall(() => store.listKeys(providerID).some((key) => key.alias === cleanAlias), api);
+        if (exists === undefined) return;
+        if (exists) {
+          confirmOverwrite(api, store, providerID, cleanAlias);
           return;
         }
-        if (preview.exists) {
-          confirmOverwrite(api, config, store, providerID, cleanAlias);
-          return;
-        }
-        saveKey(api, config, store, providerID, cleanAlias);
+        saveKey(api, store, providerID, cleanAlias);
       },
     }),
   );
 }
 
-function confirmFingerprintOverwrite(
-  api: TuiPluginApi,
-  config: KeyRotatorConfig,
-  store: KeyStore,
-  providerID: string,
-  alias: string,
-  stability: string,
-): void {
-  api.ui.dialog.replace(() =>
-    api.ui.DialogConfirm({
-      title: "Fingerprint changed",
-      message: `${providerID}/${alias} already exists, but the current credentials have a different ${stability} fingerprint. Overwrite the saved alias?`,
-      onCancel: () => api.ui.dialog.clear(),
-      onConfirm: () => saveKey(api, config, store, providerID, alias),
-    }),
-  );
-}
-
-function confirmOverwrite(api: TuiPluginApi, config: KeyRotatorConfig, store: KeyStore, providerID: string, alias: string): void {
+function confirmOverwrite(api: TuiPluginApi, store: KeyStore, providerID: string, alias: string): void {
   api.ui.dialog.replace(() =>
     api.ui.DialogConfirm({
       title: "Overwrite saved key?",
       message: `${providerID}/${alias} already exists. Overwrite it with the currently active credentials?`,
       onCancel: () => api.ui.dialog.clear(),
-      onConfirm: () => saveKey(api, config, store, providerID, alias),
+      onConfirm: () => saveKey(api, store, providerID, alias),
     }),
   );
 }
 
-function saveKey(api: TuiPluginApi, config: KeyRotatorConfig, store: KeyStore, providerID: string, alias: string): void {
-  const saved = safeCall(() => store.saveCurrentProviderKey(providerID, alias, true), api, config);
+function saveKey(api: TuiPluginApi, store: KeyStore, providerID: string, alias: string): void {
+  const saved = safeCall(() => store.saveCurrentProviderKey(providerID, alias, true), api);
   if (!saved) return;
   api.ui.dialog.clear();
   api.ui.toast({
     variant: "success",
     title: "Key saved",
     message: `${providerID}/${alias} saved as active.`,
-    duration: config.ui.toastDurationMs,
+    duration: TOAST_DURATION_MS,
   });
 }
 
-function openKeySwitch(api: TuiPluginApi, config: KeyRotatorConfig): void {
-  const store = getStore(api, config);
+function openKeySwitch(api: TuiPluginApi): void {
+  const store = getStore(api);
   if (!store) return;
   const providers = safeCall(
     () => store.getStatuses().filter((status) => status.aliases.some((alias) => alias !== status.activeAlias)),
     api,
-    config,
   );
   if (!providers || providers.length === 0) {
     showAlert(api, "No saved keys", "No provider has multiple saved keys to switch between.");
@@ -149,13 +125,13 @@ function openKeySwitch(api: TuiPluginApi, config: KeyRotatorConfig): void {
         value: status,
         description: status.activeAlias ? `active: ${status.activeAlias}` : "no active alias",
       })),
-      onSelect: (option) => chooseAlias(api, config, store, option.value.providerID, option.value.activeAlias),
+      onSelect: (option) => chooseAlias(api, store, option.value.providerID, option.value.activeAlias),
     }),
   );
 }
 
-function chooseAlias(api: TuiPluginApi, config: KeyRotatorConfig, store: KeyStore, providerID: string, activeAlias?: string): void {
-  const keys = safeCall(() => store.listKeys(providerID), api, config);
+function chooseAlias(api: TuiPluginApi, store: KeyStore, providerID: string, activeAlias?: string): void {
+  const keys = safeCall(() => store.listKeys(providerID), api);
   const switchableKeys = keys?.filter((key) => key.alias !== activeAlias);
   if (!switchableKeys || switchableKeys.length === 0) {
     showAlert(api, "No alternative keys", `${providerID} has no alternative saved keys.`);
@@ -168,24 +144,24 @@ function chooseAlias(api: TuiPluginApi, config: KeyRotatorConfig, store: KeyStor
       placeholder: "Choose alias",
       options: switchableKeys.map((key) => ({ title: key.alias, value: key.alias })),
       onSelect: (option) => {
-        const result = safeCall(() => store.switchProviderKey(providerID, option.value), api, config);
+        const result = safeCall(() => store.switchProviderKey(providerID, option.value), api);
         if (!result) return;
         api.ui.dialog.clear();
         api.ui.toast({
           variant: "success",
           title: "Key switched",
           message: `${providerID}: ${result.previousAlias ?? "unknown"} -> ${result.activeAlias}`,
-          duration: config.ui.toastDurationMs,
+          duration: TOAST_DURATION_MS,
         });
       },
     }),
   );
 }
 
-function openKeyStatus(api: TuiPluginApi, config: KeyRotatorConfig): void {
-  const store = getStore(api, config);
+function openKeyStatus(api: TuiPluginApi): void {
+  const store = getStore(api);
   if (!store) return;
-  const statuses = safeCall(() => store.getStatuses(), api, config);
+  const statuses = safeCall(() => store.getStatuses(), api);
   if (!statuses) return;
   const lastDecision = readLastRotationDecision(store);
 
@@ -193,11 +169,6 @@ function openKeyStatus(api: TuiPluginApi, config: KeyRotatorConfig): void {
     statuses.length === 0
       ? ["No provider keys saved yet.", "", "Use /key-save after /connect to save the current provider credentials."]
       : formatStatusTable(statuses);
-
-  const authWarnings = [...new Set(statuses.map((status) => status.authWarning).filter((warning): warning is string => Boolean(warning)))];
-  if (authWarnings.length > 0) {
-    lines.push("", "Warnings", "--------", ...authWarnings);
-  }
 
   if (lastDecision) {
     lines.push("");
@@ -255,26 +226,17 @@ function formatRotationReason(reason: string): string {
   return reason.replace(/_/g, " ");
 }
 
-function loadConfigForApi(api: TuiPluginApi): KeyRotatorConfig {
-  try {
-    const configDir = api.state.path && typeof api.state.path.config === "string" ? api.state.path.config : undefined;
-    return loadConfig(configDir ? { configDir } : undefined);
-  } catch {
-    return loadConfig();
-  }
-}
-
-function getStore(api: TuiPluginApi, config: KeyRotatorConfig): KeyStore | undefined {
+function getStore(api: TuiPluginApi): KeyStore | undefined {
   if (!api.state.path.state) {
     api.ui.toast({
       variant: "error",
       title: "Key rotator",
       message: "OpenCode runtime path is unavailable.",
-      duration: config.ui.toastDurationMs,
+      duration: TOAST_DURATION_MS,
     });
     return undefined;
   }
-  return createKeyStore(resolveOpencodeDataDir(api.state.path), config);
+  return createKeyStore(resolveOpencodeDataDir(api.state.path));
 }
 
 function pad(value: string, width: number): string {
@@ -285,12 +247,12 @@ function showAlert(api: TuiPluginApi, title: string, message: string): void {
   api.ui.dialog.replace(() => api.ui.DialogAlert({ title, message, onConfirm: () => api.ui.dialog.clear() }));
 }
 
-function safeCall<T>(operation: () => T, api: TuiPluginApi, config: KeyRotatorConfig): T | undefined {
+function safeCall<T>(operation: () => T, api: TuiPluginApi): T | undefined {
   try {
     return operation();
   } catch (error) {
     const message = error instanceof KeyStoreError || error instanceof Error ? error.message : String(error);
-    api.ui.toast({ variant: "error", title: "Key rotator", message, duration: config.ui.toastDurationMs });
+    api.ui.toast({ variant: "error", title: "Key rotator", message, duration: TOAST_DURATION_MS });
     return undefined;
   }
 }

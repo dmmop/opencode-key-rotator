@@ -34,13 +34,9 @@ function fixture(aliasValues = { primary: "primary", secondary: "secondary" }) {
   const aliases = new DatabaseSync(dbFile);
   for (const [alias, key] of Object.entries(aliasValues)) {
     if (alias === "primary") continue;
-    aliases.prepare("INSERT INTO opencode_key_rotator_alias VALUES (?, ?, ?, ?, ?)").run(
-      "openai",
-      alias,
-      JSON.stringify({ type: "key", key }),
-      2,
-      2,
-    );
+    aliases
+      .prepare("INSERT INTO opencode_key_rotator_alias VALUES (?, ?, ?, ?, ?)")
+      .run("openai", alias, JSON.stringify({ type: "key", key }), 2, 2);
   }
   aliases.close();
 
@@ -102,6 +98,18 @@ test("session.retry.scheduled rotates to the next saved alias", async () => {
     assert.equal(entries.at(-1).decision, "rotated_on_retry");
     assert.equal(entries.at(-1).activeAlias, "primary");
     assert.equal(entries.at(-1).nextAlias, "secondary");
+  });
+});
+
+test("disabled rotation ignores matching events", async () => {
+  const { base, dataDir } = fixture();
+  await withDataHome(base, async () => {
+    const config = loadConfig();
+    config.rotation.enabled = false;
+    await handleEvent(sessionCtx(), config, retryEvent());
+
+    assert.equal(currentKey(dataDir), "primary");
+    assert.deepEqual(logEntries(dataDir), []);
   });
 });
 

@@ -25,10 +25,6 @@ export type RotationLogEntry = {
   message?: string;
   rateLimitHeaders?: Record<string, string>;
   eventType?: string;
-  propertyKeys?: string[];
-  errorKeys?: string[];
-  errorDataKeys?: string[];
-  payload?: unknown;
   decision: RotationDecision;
   reason: string;
   activeAlias?: string;
@@ -49,7 +45,6 @@ export function writeRotationLog(store: KeyStore, entry: RotationLogEntry): void
     const line = JSON.stringify({
       ...entry,
       message: sanitizeMessage(entry.message),
-      payload: sanitizePayload(entry.payload),
     });
     rotateLogIfNeeded(store.paths.rotationLogFile, Buffer.byteLength(line) + 1);
     fs.appendFileSync(store.paths.rotationLogFile, `${line}\n`, { mode: 0o600 });
@@ -85,13 +80,13 @@ function uniqueRotatedLogFile(logFile: string): string {
   }
 }
 
-export function readLastRotationDecision(store: KeyStore): RotationLogEntry | undefined {
+export function readLastRotationDecision(store: KeyStore, providerID?: string): RotationLogEntry | undefined {
   try {
     if (!fs.existsSync(store.paths.rotationLogFile)) return undefined;
     const lines = fs.readFileSync(store.paths.rotationLogFile, "utf8").trim().split("\n").filter(Boolean);
     for (let index = lines.length - 1; index >= 0; index -= 1) {
       const entry = JSON.parse(lines[index]) as RotationLogEntry;
-      if (entry.reason !== "manual_abort") return entry;
+      if (entry.reason !== "manual_abort" && (!providerID || entry.providerID === providerID)) return entry;
     }
     return undefined;
   } catch {
@@ -117,21 +112,4 @@ export function sanitizeRateLimitHeaders(headers: unknown): Record<string, strin
     }
   }
   return Object.keys(result).length > 0 ? result : undefined;
-}
-
-function sanitizePayload(value: unknown, depth = 0): unknown {
-  if (value === null || value === undefined) return value;
-  if (typeof value === "string") return sanitizeMessage(value);
-  if (typeof value === "number" || typeof value === "boolean") return value;
-  if (typeof value === "bigint") return String(value);
-  if (depth >= 6) return "[truncated]";
-  if (Array.isArray(value)) return value.slice(0, 50).map((entry) => sanitizePayload(entry, depth + 1));
-  if (typeof value === "object") {
-    const result: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value as Record<string, unknown>).slice(0, 100)) {
-      result[key] = sanitizePayload(entry, depth + 1);
-    }
-    return result;
-  }
-  return String(value);
 }

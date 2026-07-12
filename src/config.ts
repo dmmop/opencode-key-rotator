@@ -8,70 +8,34 @@ export type KeyRotatorConfig = {
     enabled: boolean;
     patterns: RegExp[];
   };
-  storage: {
-    lockTtlMs: number;
-  };
-  ui: {
-    toastDurationMs: number;
-  };
 };
 
 export const DEFAULT_ROTATION_PATTERNS = ["\\b429\\b", "rate\\s*limit", "quota", "resource exhausted", "usage limit", "insufficient quota"];
 
-const DEFAULT_CONFIG: KeyRotatorConfig = {
-  rotation: {
-    enabled: true,
-    patterns: DEFAULT_ROTATION_PATTERNS.map((source) => new RegExp(source, "i")),
-  },
-  storage: {
-    lockTtlMs: 30_000,
-  },
-  ui: {
-    toastDurationMs: 11_000,
-  },
-};
-
-export type ConfigLoadOptions = {
-  configDir?: string;
-  configPath?: string;
-};
+export type ConfigLoadOptions = { configDir?: string };
 
 export function loadConfig(options?: ConfigLoadOptions): KeyRotatorConfig {
-  const configPath = resolveConfigPath(options);
-  if (!configPath || !fs.existsSync(configPath)) {
-    return cloneConfig(DEFAULT_CONFIG);
-  }
-
-  const raw = parseConfigFile(configPath);
-  return mergeConfig(raw);
+  const file = path.join(options?.configDir ?? getOpencodeRuntimeDirs().configDir, "opencode-key-rotator", "config.json");
+  return fs.existsSync(file) ? mergeConfig(parseConfigFile(file)) : defaultConfig();
 }
 
 export function writeDefaultConfig(configDir: string): string {
   const configDirPath = path.join(configDir, "opencode-key-rotator");
   const configFile = path.join(configDirPath, "config.json");
   fs.mkdirSync(configDirPath, { recursive: true });
+  if (fs.existsSync(configFile)) return configFile;
 
   const defaultConfig = {
     rotation: {
-      enabled: DEFAULT_CONFIG.rotation.enabled,
+      enabled: true,
       patterns: DEFAULT_ROTATION_PATTERNS,
-    },
-    storage: {
-      lockTtlMs: DEFAULT_CONFIG.storage.lockTtlMs,
-    },
-    ui: {
-      toastDurationMs: DEFAULT_CONFIG.ui.toastDurationMs,
     },
   };
 
-  fs.writeFileSync(configFile, `${JSON.stringify(defaultConfig, null, 2)}\n`, { mode: 0o600 });
+  const tmp = path.join(configDirPath, `.config.${process.pid}.${Date.now()}.tmp`);
+  fs.writeFileSync(tmp, `${JSON.stringify(defaultConfig, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(tmp, configFile);
   return configFile;
-}
-
-function resolveConfigPath(options?: ConfigLoadOptions): string | undefined {
-  if (options?.configPath) return path.resolve(options.configPath);
-  const configDir = options?.configDir ?? getOpencodeRuntimeDirs().configDir;
-  return path.join(configDir, "opencode-key-rotator", "config.json");
 }
 
 function parseConfigFile(filePath: string): unknown {
@@ -85,25 +49,16 @@ function mergeConfig(raw: unknown): KeyRotatorConfig {
   if (!isJsonObject(raw)) throw new Error("Config must be a JSON object");
 
   const rotation = isJsonObject(raw.rotation) ? raw.rotation : {};
-  const storage = isJsonObject(raw.storage) ? raw.storage : {};
-  const ui = isJsonObject(raw.ui) ? raw.ui : {};
-
   return {
     rotation: {
-      enabled: typeof rotation.enabled === "boolean" ? rotation.enabled : DEFAULT_CONFIG.rotation.enabled,
+      enabled: typeof rotation.enabled === "boolean" ? rotation.enabled : true,
       patterns: parsePatterns(rotation.patterns),
-    },
-    storage: {
-      lockTtlMs: positiveNumber(storage.lockTtlMs, DEFAULT_CONFIG.storage.lockTtlMs, "storage.lockTtlMs"),
-    },
-    ui: {
-      toastDurationMs: positiveNumber(ui.toastDurationMs, DEFAULT_CONFIG.ui.toastDurationMs, "ui.toastDurationMs"),
     },
   };
 }
 
 function parsePatterns(value: unknown): RegExp[] {
-  if (value === undefined) return DEFAULT_CONFIG.rotation.patterns.map((pattern) => new RegExp(pattern.source, pattern.flags));
+  if (value === undefined) return defaultPatterns();
   if (!Array.isArray(value)) throw new Error("rotation.patterns must be an array of regex strings");
   return value.map((entry, index) => parsePattern(entry, index));
 }
@@ -117,25 +72,19 @@ function parsePattern(value: unknown, index: number): RegExp {
   }
 }
 
-function positiveNumber(value: unknown, fallback: number, path: string): number {
-  if (value === undefined) return fallback;
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    throw new Error(`${path} must be a positive number`);
-  }
-  return value;
-}
-
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function cloneConfig(config: KeyRotatorConfig): KeyRotatorConfig {
+function defaultConfig(): KeyRotatorConfig {
   return {
     rotation: {
-      enabled: config.rotation.enabled,
-      patterns: config.rotation.patterns.map((pattern) => new RegExp(pattern.source, pattern.flags)),
+      enabled: true,
+      patterns: defaultPatterns(),
     },
-    storage: { ...config.storage },
-    ui: { ...config.ui },
   };
+}
+
+function defaultPatterns(): RegExp[] {
+  return DEFAULT_ROTATION_PATTERNS.map((source) => new RegExp(source, "i"));
 }

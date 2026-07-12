@@ -1,7 +1,4 @@
 import { stdin } from "node:process";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import { loadConfig } from "./config.js";
 import { handleEvent } from "./server.js";
 
@@ -13,15 +10,7 @@ async function readStdin(): Promise<string> {
 
 const input = await readStdin();
 const event = JSON.parse(input) as unknown;
-
-if (isRecord(event) && typeof event.id === "string") {
-  const seenFile = path.join(os.tmpdir(), `opencode-key-rotator-${event.id}.seen`);
-  try {
-    fs.writeFileSync(seenFile, String(Date.now()), { flag: "wx" });
-  } catch {
-    process.exit(0);
-  }
-}
+const config = loadConfig();
 
 await handleEvent(
   {
@@ -34,7 +23,7 @@ await handleEvent(
       },
     },
   } as never,
-  loadConfig(),
+  config,
   event,
 );
 

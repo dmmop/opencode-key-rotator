@@ -1,30 +1,22 @@
 import { Plugin } from "@opencode-ai/plugin/v2";
 import type { Context } from "@opencode-ai/plugin/v2/plugin";
-import { appendFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.js";
 import { handleEvent } from "./server.js";
 
-const handledEventIDs = new Set<string>();
-
 export default Plugin.define({
   id: "opencode-key-rotator",
   setup: async (ctx) => {
-    appendFileSync("/tmp/opencode-key-rotator-events.log", `${new Date().toISOString()} setup\n`);
     const config = loadConfig();
-
     if (!config.rotation.enabled) return;
 
     let disposed = false;
     void (async () => {
       for await (const event of ctx.event.subscribe()) {
         if (disposed) break;
-        if (isDuplicateEvent(event)) continue;
         if (!isRotationEvent(event)) continue;
-        appendFileSync("/tmp/opencode-key-rotator-events.log", `${new Date().toISOString()} ${event.type}\n`);
-        appendFileSync("/tmp/opencode-key-rotator-events.log", `${JSON.stringify(event)}\n`);
         if (isBunRuntime()) {
           await runNodeEventHandler(await enrichEvent(ctx, event));
           continue;
@@ -41,21 +33,10 @@ export default Plugin.define({
   },
 });
 
-function isRotationEvent(event: { type?: string }): boolean {
-  return (
-    event.type === "session.retry.scheduled" ||
-    event.type === "session.error" ||
-    event.type === "session.step.failed" ||
-    event.type === "session.execution.failed"
-  );
-}
+const ROTATION_EVENTS = new Set(["session.retry.scheduled", "session.error", "session.step.failed", "session.execution.failed"]);
 
-function isDuplicateEvent(event: { id?: string }): boolean {
-  if (!event.id) return false;
-  if (handledEventIDs.has(event.id)) return true;
-  handledEventIDs.add(event.id);
-  if (handledEventIDs.size > 1_000) handledEventIDs.clear();
-  return false;
+function isRotationEvent(event: { type?: string }): boolean {
+  return ROTATION_EVENTS.has(event.type ?? "");
 }
 
 function isBunRuntime(): boolean {
@@ -86,7 +67,7 @@ async function runNodeEventHandler(event: unknown): Promise<void> {
     });
     child.on("close", (code) => {
       if (code !== 0) {
-        appendFileSync("/tmp/opencode-key-rotator-events.log", `${new Date().toISOString()} node-handler-exit ${code}: ${stderr}\n`);
+        console.warn(`[opencode-key-rotator] node event handler exited with ${code}: ${stderr}`);
       }
       resolve();
     });

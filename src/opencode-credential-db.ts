@@ -1,10 +1,9 @@
-import { DatabaseSync, type StatementSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { KeyStoreError } from "./errors.js";
 
 export const PLUGIN_SCHEMA_VERSION = 1;
-export const CREDENTIAL_VALUE_TYPES = ["oauth", "key"] as const;
 export type CredentialValue =
   | {
       type: "oauth";
@@ -156,17 +155,6 @@ export function parseCredentialValue(raw: string): CredentialValue {
 
 export function serializeCredentialValue(value: CredentialValue): string {
   return JSON.stringify(value);
-}
-
-export function generateCredentialID(db: DatabaseSync): string {
-  const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-  for (;;) {
-    const time = Date.now().toString(16).padStart(12, "0").slice(-12);
-    let random = "";
-    for (let i = 0; i < 14; i += 1) random += alphabet[Math.floor(Math.random() * alphabet.length)];
-    const id = `cred_${time}${random}`;
-    if (!db.prepare("SELECT 1 FROM credential WHERE id = ?").get(id)) return id;
-  }
 }
 
 export function dbError(error: unknown, fallback?: string): KeyStoreError {
