@@ -1,117 +1,73 @@
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { createKeyStore } from "../dist/key-store.js";
 
-test("stores keys under provider directories and preserves other auth providers", () => {
-  const { dataDir } = tempDataDir();
-  writeJson(path.join(dataDir, "auth.json"), {
-    open_ai: { type: "api", key: "key-provider-with-underscore" },
-    openai: { type: "api", key: "key-a" },
-    anthropic: { type: "api", key: "anthropic-key" },
-  });
+function fixture() {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-v2-"));
+  const db = new DatabaseSync(path.join(dataDir, "opencode-next.db"));
+  db.exec(
+    "CREATE TABLE credential (id TEXT PRIMARY KEY, integration_id TEXT NULL, label TEXT NOT NULL, value TEXT NOT NULL, connector_id TEXT NULL, method_id TEXT NULL, active INTEGER NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL)",
+  );
+  db.prepare("INSERT INTO credential VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?)").run(
+    "cred_one",
+    "openai",
+    "Connection",
+    JSON.stringify({ type: "key", key: "one" }),
+    1,
+    1,
+  );
+  db.close();
+  return dataDir;
+}
 
+test("uses opencode-next.db and stores aliases in namespaced tables", () => {
+  const dataDir = fixture();
   const store = createKeyStore(dataDir);
-  store.saveCurrentProviderKey("open_ai", "personal_key", true);
-  assert.equal(fs.existsSync(path.join(dataDir, "keys", "open_ai", "personal_key.json")), true);
-
-  writeJson(path.join(dataDir, "auth.json"), {
-    openai: { type: "api", key: "key-b" },
-    open_ai: { type: "api", key: "key-a" },
-    anthropic: { type: "api", key: "anthropic-key" },
-  });
-  store.saveCurrentProviderKey("openai", "work", true);
-  store.switchProviderKey("openai", "work");
-
-  const auth = readJson(path.join(dataDir, "auth.json"));
-  assert.deepEqual(auth.anthropic, { type: "api", key: "anthropic-key" });
-  assert.deepEqual(auth.openai, { type: "api", key: "key-b" });
+  store.saveCurrentProviderKey("openai", "primary", true);
+  assert.equal(fs.existsSync(path.join(dataDir, "opencode-next.db")), true);
+  assert.deepEqual(store.getStatuses()[0].aliases, ["primary"]);
+  assert.equal(store.getStatuses()[0].activeAlias, "primary");
 });
 
-test("status comes from keys and active metadata when auth is missing", () => {
-  const { dataDir } = tempDataDir();
+test("switch preserves the OpenCode connection label and updates active metadata", () => {
+  const dataDir = fixture();
   const store = createKeyStore(dataDir);
-  fs.mkdirSync(path.join(dataDir, "keys", "open_ai"), { recursive: true });
-  writeJson(path.join(dataDir, "keys", "open_ai", "personal_key.json"), { type: "api", key: "key-a" });
-
-  const statuses = store.getStatuses();
-  assert.equal(statuses.length, 1);
-  assert.equal(statuses[0].providerID, "open_ai");
-  assert.deepEqual(statuses[0].aliases, ["personal_key"]);
+  store.saveCurrentProviderKey("openai", "one", true);
+  const db = new DatabaseSync(path.join(dataDir, "opencode-next.db"));
+  db.prepare("INSERT INTO opencode_key_rotator_alias VALUES (?, ?, ?, ?, ?)").run(
+    "openai",
+    "two",
+    JSON.stringify({ type: "key", key: "two" }),
+    2,
+    2,
+  );
+  db.close();
+  store.switchProviderKey("openai", "two");
+  const check = new DatabaseSync(path.join(dataDir, "opencode-next.db"));
+  assert.equal(check.prepare("SELECT label FROM credential WHERE integration_id = 'openai'").get().label, "Connection");
+  assert.equal(store.readActiveAliases().openai, "two");
+  check.close();
 });
 
-test("switch is blocked when active credentials changed outside the plugin", () => {
-  const { dataDir } = tempDataDir();
-  const authFile = path.join(dataDir, "auth.json");
-  writeJson(authFile, { openai: { type: "api", key: "key-a" } });
-
+test("active aliases cannot be deleted and alias collisions are rejected", () => {
+  const dataDir = fixture();
   const store = createKeyStore(dataDir);
-  store.saveCurrentProviderKey("openai", "a", true);
-  writeJson(authFile, { openai: { type: "api", key: "key-b" } });
-  store.saveCurrentProviderKey("openai", "b", false);
-  writeJson(authFile, { openai: { type: "api", key: "changed-outside" } });
-
-  assert.throws(() => store.switchProviderKey("openai", "b"), /no longer match alias/);
+  store.saveCurrentProviderKey("openai", "one", true);
+  assert.throws(() => store.deleteProviderKey("openai", "one"), { code: "ACTIVE_ALIAS" });
+  assert.throws(() => store.renameProviderKey("openai", "one", "one"), { code: "ALIAS_COLLISION" });
 });
 
-test("lockfile blocks concurrent writes unless stale", () => {
-  const { dataDir } = tempDataDir();
+test("rejects a busy lock and accepts a stale lock", () => {
+  const dataDir = fixture();
   const store = createKeyStore(dataDir);
-  writeJson(path.join(dataDir, "auth.json"), { openai: { type: "api", key: "key-a" } });
   fs.mkdirSync(path.join(dataDir, "keys"), { recursive: true });
-  const lockFile = path.join(dataDir, "keys", ".lock");
-  fs.writeFileSync(lockFile, "{}");
-
-  assert.throws(() => store.saveCurrentProviderKey("openai", "a", true), /busy/);
-
+  fs.writeFileSync(path.join(dataDir, "keys", ".lock"), "{}");
+  assert.throws(() => store.saveCurrentProviderKey("openai", "one", true), /busy/i);
   const stale = new Date(Date.now() - 60_000);
-  fs.utimesSync(lockFile, stale, stale);
-  assert.doesNotThrow(() => store.saveCurrentProviderKey("openai", "a", true));
+  fs.utimesSync(path.join(dataDir, "keys", ".lock"), stale, stale);
+  assert.doesNotThrow(() => store.saveCurrentProviderKey("openai", "one", true));
 });
-
-test("api key fingerprints are stable", () => {
-  const { dataDir } = tempDataDir();
-  writeJson(path.join(dataDir, "auth.json"), { "opencode-go": { type: "api", key: "key-a" } });
-
-  const store = createKeyStore(dataDir);
-  const saved = store.saveCurrentProviderKey("opencode-go", "davidmtn", true);
-
-  assert.equal(saved.fingerprint.type, "api");
-  assert.equal(saved.fingerprint.stability, "stable");
-});
-
-test("reads auth.json from XDG data dir and keeps keys in the same data dir", () => {
-  const { dataDir } = tempDataDir();
-  writeJson(path.join(dataDir, "auth.json"), { openai: { type: "api", key: "key-a" } });
-
-  const store = createKeyStore(dataDir);
-  assert.equal(store.paths.dataDir, dataDir);
-  assert.equal(store.paths.authFile, path.join(dataDir, "auth.json"));
-
-  store.saveCurrentProviderKey("openai", "personal", true);
-  assert.equal(fs.existsSync(path.join(dataDir, "keys", "openai", "personal.json")), true);
-});
-
-function tempDataDir() {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-key-rotator-"));
-  // Isolate from the real home directory so XDG fallback candidates do not
-  // accidentally pick up the user's actual OpenCode auth.json during tests.
-  process.env.HOME = base;
-  const dataHome = path.join(base, "data");
-  process.env.XDG_DATA_HOME = dataHome;
-  return {
-    base,
-    dataDir: path.join(dataHome, "opencode"),
-  };
-}
-
-function writeJson(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
-}
-
-function readJson(file) {
-  return JSON.parse(fs.readFileSync(file, "utf8"));
-}

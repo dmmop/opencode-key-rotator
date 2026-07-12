@@ -1,479 +1,383 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { KeyStoreError } from "./errors.js";
 import { loadConfig, type KeyRotatorConfig } from "./config.js";
+import {
+  applyMigrations,
+  generateCredentialID,
+  getCredential,
+  openCredentialDb,
+  parseCredentialValue,
+  serializeCredentialValue,
+  withWriteTransaction,
+  type CredentialRow,
+  type CredentialValue,
+} from "./opencode-credential-db.js";
 
 export type JsonObject = Record<string, unknown>;
-
-export type Fingerprint = {
-  hash: string;
-  type: "oauth" | "api" | "wellknown" | "unknown";
-  stability: "stable" | "unstable";
-};
-
-export type ActiveProvider = {
-  alias: string;
-  fingerprint: Fingerprint;
-  updatedAt: string;
-};
-
-export type ActiveState = {
-  providers: Record<string, ActiveProvider>;
-};
-
-export type KeyAlias = {
-  providerID: string;
-  alias: string;
-  file: string;
-  fingerprint: Fingerprint;
-};
-
+export type Fingerprint = { hash: string; type: "oauth" | "api" | "wellknown" | "unknown"; stability: "stable" | "unstable" };
+export type ActiveProvider = { alias: string; credentialID: string; fingerprint: Fingerprint; updatedAt: string };
+export type ActiveState = { providers: Record<string, ActiveProvider> };
+export type KeyAlias = { providerID: string; alias: string; file?: string; fingerprint: Fingerprint; value?: JsonObject };
 export type KeyStatus = {
   providerID: string;
   activeAlias?: string;
   aliases: string[];
   authWarning?: string;
   synced?: boolean;
+  connected?: boolean;
+  credentialLabel?: string;
 };
-
-export type SwitchResult = {
-  providerID: string;
-  previousAlias?: string;
-  activeAlias: string;
-};
-
-export type SaveResult = KeyAlias & {
-  replaced: boolean;
-  fingerprintChanged: boolean;
-};
-
+export type SwitchResult = { providerID: string; previousAlias?: string; activeAlias: string };
+export type SaveResult = KeyAlias & { replaced: boolean; fingerprintChanged: boolean };
 export type KeyStore = ReturnType<typeof createKeyStore>;
 
-const SAFE_SEGMENT = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?$/;
-const RESERVED_SEGMENTS = new Set(["backups", ".lock"]);
-
 export function createKeyStore(dataDir: string, config?: KeyRotatorConfig) {
-  const paths = createKeyStorePaths(dataDir);
+  const resolvedDataDir = path.resolve(dataDir);
+  const paths = {
+    dataDir: resolvedDataDir,
+    keysDir: path.join(resolvedDataDir, "keys"),
+    lockFile: path.join(resolvedDataDir, "keys", ".lock"),
+    rotationLogFile: path.join(resolvedDataDir, "keys", "rotation.log.jsonl"),
+    dbFile: path.join(resolvedDataDir, "opencode-next.db"),
+  };
   const resolvedConfig = config ?? loadConfig();
 
   function ensureKeysDir(): void {
     fs.mkdirSync(paths.keysDir, { recursive: true, mode: 0o700 });
-    chmodIfExists(paths.keysDir, 0o700);
+    try {
+      fs.chmodSync(paths.keysDir, 0o700);
+    } catch {}
   }
-
-  function readAuth(): JsonObject {
-    return readAuthOptional();
-  }
-
-  function readAuthOptional(): JsonObject {
-    if (!fs.existsSync(paths.authFile)) return {};
-    return readJsonObject(paths.authFile, "OpenCode auth file");
-  }
-
-  function readAuthRequired(): JsonObject {
-    if (!fs.existsSync(paths.authFile)) throw new KeyStoreError("AUTH_MISSING", `OpenCode auth file was not found at ${paths.authFile}`);
-    return readJsonObject(paths.authFile, "OpenCode auth file");
-  }
-
-  function readActiveState(): ActiveState {
-    if (!fs.existsSync(paths.activeFile)) return { providers: {} };
-    const active = readJsonObject(paths.activeFile, "active key file");
-    if (!isJsonObject(active.providers)) throw new KeyStoreError("AUTH_INVALID", "active key file must contain a providers object");
-
-    const providers: Record<string, ActiveProvider> = {};
-    for (const [providerID, value] of Object.entries(active.providers)) {
-      validateProviderID(providerID);
-      if (!isJsonObject(value) || typeof value.alias !== "string" || typeof value.updatedAt !== "string") {
-        throw new KeyStoreError("AUTH_INVALID", `Invalid active metadata for provider '${providerID}'`);
-      }
-      validateAlias(value.alias);
-      if (!isFingerprint(value.fingerprint)) {
-        throw new KeyStoreError("AUTH_INVALID", `Invalid fingerprint metadata for provider '${providerID}'`);
-      }
-      providers[providerID] = {
-        alias: value.alias,
-        fingerprint: value.fingerprint,
-        updatedAt: value.updatedAt,
-      };
+  function db<T>(operation: (database: DatabaseSync) => T): T {
+    const database = openCredentialDb(resolvedDataDir);
+    try {
+      return operation(database);
+    } finally {
+      database.close();
     }
-
-    return { providers };
   }
-
-  function readActiveAliases(): Record<string, string> {
-    const active = readActiveState();
-    return Object.fromEntries(Object.entries(active.providers).map(([providerID, provider]) => [providerID, provider.alias]));
+  function write<T>(operation: (database: DatabaseSync) => T): T {
+    return withLock(() => db((database) => withWriteTransaction(database, () => operation(database))));
   }
 
   function listKeys(providerID?: string): KeyAlias[] {
-    ensureKeysDir();
-    const providerIDs = fs
-      .readdirSync(paths.keysDir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && entry.name !== "backups")
-      .map((entry) => entry.name)
-      .filter((entry) => providerID === undefined || entry === providerID);
-
-    return providerIDs
-      .flatMap((currentProviderID) => listProviderKeys(currentProviderID))
-      .sort((left, right) => `${left.providerID}/${left.alias}`.localeCompare(`${right.providerID}/${right.alias}`));
-  }
-
-  function listProviderIDs(): string[] {
-    const auth = readAuthRequired();
-    const active = readActiveState();
-    const fromKeys = listKeys().map((entry) => entry.providerID);
-    return [...new Set([...Object.keys(auth), ...Object.keys(active.providers), ...fromKeys])].sort();
-  }
-
-  function getStatuses(): KeyStatus[] {
-    const active = readActiveState();
-    const keys = listKeys();
-    const aliasesByProvider = new Map<string, string[]>();
-    for (const key of keys) {
-      const aliases = aliasesByProvider.get(key.providerID) ?? [];
-      aliases.push(key.alias);
-      aliasesByProvider.set(key.providerID, aliases);
-    }
-
-    let auth: JsonObject = {};
-    let authWarning: string | undefined;
-    try {
-      auth = readAuth();
-    } catch (error) {
-      authWarning = error instanceof Error ? error.message : String(error);
-    }
-
-    const providers = new Set([...Object.keys(active.providers), ...aliasesByProvider.keys(), ...Object.keys(auth)]);
-    return [...providers].sort().map((providerID) => {
-      const activeProvider = active.providers[providerID];
-      const currentCredential = auth[providerID];
-      const synced =
-        activeProvider && isJsonObject(currentCredential)
-          ? sameFingerprint(calculateFingerprint(currentCredential), activeProvider.fingerprint)
-          : undefined;
-      return {
-        providerID,
-        activeAlias: activeProvider?.alias,
-        aliases: aliasesByProvider.get(providerID) ?? [],
-        authWarning,
-        synced,
-      };
+    return db((database) => {
+      const rows = (
+        providerID
+          ? database.prepare("SELECT * FROM opencode_key_rotator_alias WHERE integration_id = ? ORDER BY alias").all(providerID)
+          : database.prepare("SELECT * FROM opencode_key_rotator_alias ORDER BY integration_id, alias").all()
+      ) as Array<{ integration_id: string; alias: string; value: string }>;
+      return rows.map((row) => aliasFromRow(row));
     });
   }
-
+  function listProviderIDs(): string[] {
+    return db((database) => {
+      const credentials = (
+        database.prepare("SELECT integration_id FROM credential WHERE integration_id IS NOT NULL").all() as Array<{
+          integration_id: string;
+        }>
+      ).map((row) => row.integration_id);
+      const aliases = (
+        database.prepare("SELECT integration_id FROM opencode_key_rotator_alias").all() as Array<{ integration_id: string }>
+      ).map((row) => row.integration_id);
+      return [...new Set([...credentials, ...aliases])].sort();
+    });
+  }
+  function getStatuses(): KeyStatus[] {
+    return db((database) => {
+      const providers = listProviderIDsInDb(database);
+      return providers.map((providerID) => {
+        const credential = getCredential(database, providerID);
+        const aliases = database
+          .prepare("SELECT alias, value FROM opencode_key_rotator_alias WHERE integration_id = ? ORDER BY alias")
+          .all(providerID) as Array<{ alias: string; value: string }>;
+        const active = activeFor(database, providerID, credential);
+        return {
+          providerID,
+          activeAlias: active?.alias,
+          aliases: aliases.map((row) => row.alias),
+          synced: credential && active ? true : undefined,
+          connected: Boolean(credential),
+          credentialLabel: credential?.label,
+        };
+      });
+    });
+  }
   function saveCurrentProviderKey(providerID: string, alias: string, markActive: boolean): SaveResult {
     validateProviderID(providerID);
     validateAlias(alias);
-    const auth = readAuth();
-    const credential = auth[providerID];
-    if (!isJsonObject(credential)) {
-      throw new KeyStoreError("AUTH_MISSING", `Provider '${providerID}' was not found in auth.json`);
-    }
-
-    return withLock(() => {
-      const file = keyFilePath(providerID, alias);
-      const currentFingerprint = calculateFingerprint(credential);
-      const previous = fs.existsSync(file) ? readJsonObject(file, `key '${providerID}/${alias}'`) : undefined;
-      const previousFingerprint = previous ? calculateFingerprint(previous) : undefined;
-
-      ensureProviderDir(providerID);
-      writeJsonAtomic(file, credential);
-
-      if (markActive) {
-        const active = readActiveState();
-        active.providers[providerID] = activeProvider(alias, currentFingerprint);
-        writeJsonAtomic(paths.activeFile, active);
-      }
-
+    return write((database) => {
+      const credential = requireCredential(database, providerID);
+      const value = parseValue(credential.value);
+      const previous = database
+        .prepare("SELECT value FROM opencode_key_rotator_alias WHERE integration_id = ? AND alias = ?")
+        .get(providerID, alias) as { value: string } | undefined;
+      const now = Date.now();
+      database
+        .prepare(
+          `INSERT INTO opencode_key_rotator_alias(integration_id, alias, value, time_created, time_updated) VALUES (?, ?, ?, ?, ?) ON CONFLICT(integration_id, alias) DO UPDATE SET value=excluded.value, time_updated=excluded.time_updated`,
+        )
+        .run(providerID, alias, serializeCredentialValue(value), previous ? now : now, now);
+      if (markActive) markActiveAlias(database, providerID, credential.id, alias, value);
+      const fingerprint = calculateFingerprint(value);
       return {
         providerID,
         alias,
-        file,
-        fingerprint: currentFingerprint,
-        replaced: previous !== undefined,
-        fingerprintChanged: previousFingerprint !== undefined && !sameFingerprint(previousFingerprint, currentFingerprint),
+        fingerprint,
+        replaced: Boolean(previous),
+        fingerprintChanged: previous ? !sameFingerprint(calculateFingerprint(parseValue(previous.value)), fingerprint) : false,
       };
     });
   }
-
-  function previewCurrentProviderKey(
-    providerID: string,
-    alias: string,
-  ): { exists: boolean; fingerprintChanged: boolean; fingerprint: Fingerprint; existingFingerprint?: Fingerprint } {
+  function previewCurrentProviderKey(providerID: string, alias: string) {
     validateProviderID(providerID);
     validateAlias(alias);
-    const auth = readAuthRequired();
-    const credential = auth[providerID];
-    if (!isJsonObject(credential)) {
-      throw new KeyStoreError("AUTH_MISSING", `Provider '${providerID}' was not found in auth.json`);
-    }
-    const fingerprint = calculateFingerprint(credential);
-    const file = keyFilePath(providerID, alias);
-    if (!fs.existsSync(file)) return { exists: false, fingerprintChanged: false, fingerprint };
-    const existingFingerprint = calculateFingerprint(readJsonObject(file, `key '${providerID}/${alias}'`));
-    return { exists: true, fingerprintChanged: !sameFingerprint(fingerprint, existingFingerprint), fingerprint, existingFingerprint };
-  }
-
-  function switchProviderKey(providerID: string, alias: string, reason = "key-switch"): SwitchResult {
-    validateProviderID(providerID);
-    validateAlias(alias);
-    return withLock(() => switchProviderKeyUnlocked(providerID, alias, true));
-  }
-
-  function rotateProviderKey(providerID: string): SwitchResult | undefined {
-    validateProviderID(providerID);
-    return withLock(() => {
-      const keys = listKeys(providerID);
-      if (keys.length < 2) return undefined;
-
-      const active = readActiveState();
-      const currentAlias = active.providers[providerID]?.alias;
-      const currentIndex = currentAlias ? keys.findIndex((entry) => entry.alias === currentAlias) : -1;
-      const next = keys[(currentIndex + 1 + keys.length) % keys.length];
-      return switchProviderKeyUnlocked(providerID, next.alias, true);
+    return db((database) => {
+      const credential = requireCredential(database, providerID);
+      const fingerprint = calculateFingerprint(parseValue(credential.value));
+      const existing = database
+        .prepare("SELECT value FROM opencode_key_rotator_alias WHERE integration_id = ? AND alias = ?")
+        .get(providerID, alias) as { value: string } | undefined;
+      const existingFingerprint = existing ? calculateFingerprint(parseValue(existing.value)) : undefined;
+      return {
+        exists: Boolean(existing),
+        fingerprintChanged: Boolean(existingFingerprint && !sameFingerprint(existingFingerprint, fingerprint)),
+        fingerprint,
+        existingFingerprint,
+      };
     });
   }
-
+  function switchProviderKey(providerID: string, alias: string, _reason = "key-switch"): SwitchResult {
+    validateProviderID(providerID);
+    validateAlias(alias);
+    return write((database) => {
+      const credential = requireCredential(database, providerID);
+      const current = parseValue(credential.value);
+      const previous = activeFor(database, providerID, credential);
+      if (previous)
+        database
+          .prepare("UPDATE opencode_key_rotator_alias SET value = ?, time_updated = ? WHERE integration_id = ? AND alias = ?")
+          .run(serializeCredentialValue(current), Date.now(), providerID, previous.alias);
+      else clearStaleActive(database, providerID);
+      const target = database
+        .prepare("SELECT value FROM opencode_key_rotator_alias WHERE integration_id = ? AND alias = ?")
+        .get(providerID, alias) as { value: string } | undefined;
+      if (!target) throw new KeyStoreError("NOT_CONNECTED", `Alias '${providerID}/${alias}' was not found`);
+      const next = parseValue(target.value);
+      const id = replaceCredential(database, credential, next);
+      markActiveAlias(database, providerID, id, alias, next);
+      return { providerID, previousAlias: previous?.alias, activeAlias: alias };
+    });
+  }
+  function renameProviderKey(providerID: string, alias: string, newAlias: string): void {
+    validateProviderID(providerID);
+    validateAlias(alias);
+    validateAlias(newAlias);
+    write((database) => {
+      if (database.prepare("SELECT 1 FROM opencode_key_rotator_alias WHERE integration_id = ? AND alias = ?").get(providerID, newAlias))
+        throw new KeyStoreError("ALIAS_COLLISION", `Alias '${providerID}/${newAlias}' already exists`);
+      try {
+        database
+          .prepare("UPDATE opencode_key_rotator_alias SET alias = ?, time_updated = ? WHERE integration_id = ? AND alias = ?")
+          .run(newAlias, Date.now(), providerID, alias);
+      } catch (error) {
+        throw new KeyStoreError("DB_ERROR", String(error));
+      }
+    });
+  }
+  function deleteProviderKey(providerID: string, alias: string): void {
+    validateProviderID(providerID);
+    validateAlias(alias);
+    write((database) => {
+      const credential = requireCredential(database, providerID);
+      const active = activeFor(database, providerID, credential);
+      if (active?.alias === alias)
+        throw new KeyStoreError("ACTIVE_ALIAS", "The active alias cannot be deleted; switch to another alias first");
+      clearStaleActive(database, providerID);
+      database.prepare("DELETE FROM opencode_key_rotator_alias WHERE integration_id = ? AND alias = ?").run(providerID, alias);
+    });
+  }
+  function rotateProviderKey(providerID: string): SwitchResult | undefined {
+    const keys = listKeys(providerID);
+    if (keys.length < 2) return undefined;
+    const current = readActiveAliases()[providerID];
+    const next = keys[(keys.findIndex((key) => key.alias === current) + 1 + keys.length) % keys.length];
+    return switchProviderKey(providerID, next.alias, "auto-rotate");
+  }
   function hasAlternativeKey(providerID: string): boolean {
     return listKeys(providerID).length >= 2;
   }
-
   function keyExists(providerID: string, alias: string): boolean {
     validateProviderID(providerID);
     validateAlias(alias);
-    return fs.existsSync(keyFilePath(providerID, alias));
+    return listKeys(providerID).some((key) => key.alias === alias);
   }
-
-  function switchProviderKeyUnlocked(providerID: string, alias: string, persistCurrent: boolean): SwitchResult {
-    const active = readActiveState();
-    const previous = active.providers[providerID];
-    const previousAlias = previous?.alias;
-
-    if (previous) {
-      const auth = readAuthRequired();
-      const currentCredential = auth[providerID];
-      if (currentCredential === undefined) throw new KeyStoreError("AUTH_MISSING", `Provider '${providerID}' was not found in auth.json`);
-      if (!isJsonObject(currentCredential))
-        throw new KeyStoreError("AUTH_INVALID", `Provider '${providerID}' in auth.json must contain a JSON object`);
-      const currentFingerprint = calculateFingerprint(currentCredential);
-      if (!sameFingerprint(currentFingerprint, previous.fingerprint)) {
-        throw new KeyStoreError(
-          "FINGERPRINT_MISMATCH",
-          `Active ${providerID} credentials no longer match alias '${previous.alias}'. Run /key-save before switching.`,
-        );
+  function readActiveState(): ActiveState {
+    return db((database) => {
+      const state: ActiveState = { providers: {} };
+      for (const providerID of listProviderIDsInDb(database)) {
+        const credential = getCredential(database, providerID);
+        const active = activeFor(database, providerID, credential);
+        if (active) state.providers[providerID] = active;
       }
-      if (persistCurrent) {
-        writeJsonAtomic(keyFilePath(providerID, previous.alias), currentCredential);
-      }
-    }
-
-    const next = readJsonObject(keyFilePath(providerID, alias), `key '${providerID}/${alias}'`);
-    const nextFingerprint = calculateFingerprint(next);
-    const auth = readAuthRequired();
-    auth[providerID] = next;
-    writeJsonAtomic(paths.authFile, auth);
-
-    active.providers[providerID] = activeProvider(alias, nextFingerprint);
-    writeJsonAtomic(paths.activeFile, active);
-
-    return { providerID, previousAlias, activeAlias: alias };
+      return state;
+    });
   }
-
-  function listProviderKeys(providerID: string): KeyAlias[] {
-    validateProviderID(providerID);
-    const providerDir = path.join(paths.keysDir, providerID);
-    if (!fs.existsSync(providerDir)) return [];
-    return fs
-      .readdirSync(providerDir, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-      .map((entry) => {
-        const alias = entry.name.slice(0, -".json".length);
-        if (!SAFE_SEGMENT.test(alias)) return undefined;
-        const file = path.join(providerDir, entry.name);
-        return { providerID, alias, file, fingerprint: calculateFingerprint(readJsonObject(file, `key '${providerID}/${alias}'`)) };
-      })
-      .filter((entry): entry is KeyAlias => entry !== undefined);
-  }
-
-  function keyFilePath(providerID: string, alias: string): string {
-    validateProviderID(providerID);
-    validateAlias(alias);
-    return path.join(paths.keysDir, providerID, `${alias}.json`);
-  }
-
-  function ensureProviderDir(providerID: string): void {
-    validateProviderID(providerID);
-    ensureKeysDir();
-    const providerDir = path.join(paths.keysDir, providerID);
-    fs.mkdirSync(providerDir, { recursive: true, mode: 0o700 });
-    chmodIfExists(providerDir, 0o700);
+  function readActiveAliases(): Record<string, string> {
+    return Object.fromEntries(Object.entries(readActiveState().providers).map(([provider, active]) => [provider, active.alias]));
   }
 
   function withLock<T>(operation: () => T): T {
     ensureKeysDir();
-    const lockFile = paths.lockFile;
     const now = Date.now();
     try {
-      fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, createdAt: new Date(now).toISOString() }), { flag: "wx", mode: 0o600 });
-    } catch (error) {
-      if (!isStaleLock(lockFile, now)) throw new KeyStoreError("BUSY", "Key store is busy. Try again in a moment.");
-      fs.rmSync(lockFile, { force: true });
+      fs.writeFileSync(paths.lockFile, JSON.stringify({ pid: process.pid, createdAt: now }), { flag: "wx", mode: 0o600 });
+    } catch {
       try {
-        fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, createdAt: new Date(now).toISOString() }), {
-          flag: "wx",
-          mode: 0o600,
-        });
-      } catch {
-        throw new KeyStoreError("LOCK_RACE", "Key store is busy. Try again in a moment.");
+        if (now - fs.statSync(paths.lockFile).mtimeMs > resolvedConfig.storage.lockTtlMs) {
+          fs.rmSync(paths.lockFile, { force: true });
+          fs.writeFileSync(paths.lockFile, "{}", { flag: "wx", mode: 0o600 });
+        } else throw new Error("busy");
+      } catch (error) {
+        if (error instanceof KeyStoreError) throw error;
+        throw new KeyStoreError("BUSY", "Key store is busy. Try again in a moment.");
       }
     }
-
     try {
       return operation();
     } finally {
-      fs.rmSync(lockFile, { force: true });
-    }
-
-    function isStaleLock(lockFile: string, now: number): boolean {
-      try {
-        return now - fs.statSync(lockFile).mtimeMs > resolvedConfig.storage.lockTtlMs;
-      } catch {
-        return true;
-      }
+      fs.rmSync(paths.lockFile, { force: true });
     }
   }
-
-  function writeJsonAtomic(file: string, value: JsonObject): void {
-    const directory = path.dirname(file);
-    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-    const temporary = path.join(directory, `.${path.basename(file)}.${process.pid}.${Date.now()}.tmp`);
-    fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-    fs.renameSync(temporary, file);
-    chmodIfExists(file, 0o600);
-  }
-
   return {
     paths,
     ensureKeysDir,
-    readAuth,
-    readActiveState,
-    readActiveAliases,
     listKeys,
     listProviderIDs,
     getStatuses,
     saveCurrentProviderKey,
     previewCurrentProviderKey,
     switchProviderKey,
+    renameProviderKey,
+    deleteProviderKey,
     rotateProviderKey,
     hasAlternativeKey,
     keyExists,
+    readActiveState,
+    readActiveAliases,
     calculateFingerprint,
   };
-}
 
-function createKeyStorePaths(dataDir: string) {
-  const resolvedDataDir = path.resolve(dataDir);
-  const keysDir = path.join(resolvedDataDir, "keys");
-  return {
-    dataDir: resolvedDataDir,
-    authFile: path.join(resolvedDataDir, "auth.json"),
-    keysDir,
-    activeFile: path.join(keysDir, "active.json"),
-    lockFile: path.join(keysDir, ".lock"),
-    rotationLogFile: path.join(keysDir, "rotation.log.jsonl"),
-  };
-}
-
-function calculateFingerprint(credential: JsonObject): Fingerprint {
-  const type = typeof credential.type === "string" ? credential.type : "unknown";
-  if (type === "oauth") {
-    const accountId = stringValue(credential.accountId);
-    const enterpriseUrl = stringValue(credential.enterpriseUrl);
-    if (accountId) return fingerprint("oauth", "stable", [type, accountId, enterpriseUrl]);
-    if (enterpriseUrl) return fingerprint("oauth", "stable", [type, enterpriseUrl]);
-    return fingerprint("oauth", "unstable", [type, stringValue(credential.refresh), stringValue(credential.access)]);
+  function aliasFromRow(row: { integration_id: string; alias: string; value: string }): KeyAlias {
+    const value = parseValue(row.value);
+    return { providerID: row.integration_id, alias: row.alias, fingerprint: calculateFingerprint(value), value };
   }
-  if (type === "api") return fingerprint("api", "stable", [type, stringValue(credential.key)]);
-  if (type === "wellknown") return fingerprint("wellknown", "unstable", [type, stringValue(credential.key), stringValue(credential.token)]);
-  return fingerprint("unknown", "unstable", [JSON.stringify(redactCredentialShape(credential))]);
 }
 
-function activeProvider(alias: string, fingerprintValue: Fingerprint): ActiveProvider {
+function listProviderIDsInDb(db: DatabaseSync): string[] {
+  return [
+    ...new Set([
+      ...(
+        db.prepare("SELECT integration_id FROM credential WHERE integration_id IS NOT NULL").all() as Array<{ integration_id: string }>
+      ).map((row) => row.integration_id),
+      ...(db.prepare("SELECT integration_id FROM opencode_key_rotator_alias").all() as Array<{ integration_id: string }>).map(
+        (row) => row.integration_id,
+      ),
+    ]),
+  ].sort();
+}
+function requireCredential(db: DatabaseSync, providerID: string): CredentialRow {
+  const row = getCredential(db, providerID);
+  if (!row) throw new KeyStoreError("NOT_CONNECTED", `Provider '${providerID}' has no connected credential`);
+  parseValue(row.value);
+  return row;
+}
+function parseValue(value: string): CredentialValue {
+  return parseCredentialValue(value);
+}
+function activeFor(db: DatabaseSync, providerID: string, credential: CredentialRow | undefined): ActiveProvider | undefined {
+  const row = db.prepare("SELECT * FROM opencode_key_rotator_active WHERE integration_id = ?").get(providerID) as
+    | { alias: string; credential_id: string; time_updated: number }
+    | undefined;
+  if (!row || !credential || row.credential_id !== credential.id) {
+    if (row) clearStaleActive(db, providerID);
+    return undefined;
+  }
+  const alias = db
+    .prepare("SELECT value FROM opencode_key_rotator_alias WHERE integration_id = ? AND alias = ?")
+    .get(providerID, row.alias) as { value: string } | undefined;
+  if (!alias || !sameFingerprint(calculateFingerprint(parseValue(alias.value)), calculateFingerprint(parseValue(credential.value)))) {
+    clearStaleActive(db, providerID);
+    return undefined;
+  }
   return {
-    alias,
-    fingerprint: fingerprintValue,
-    updatedAt: new Date().toISOString(),
+    alias: row.alias,
+    credentialID: row.credential_id,
+    fingerprint: calculateFingerprint(parseValue(credential.value)),
+    updatedAt: new Date(row.time_updated).toISOString(),
   };
 }
-
-function fingerprint(type: Fingerprint["type"], stability: Fingerprint["stability"], parts: Array<string | undefined>): Fingerprint {
-  const material = parts.map((part) => part ?? "").join("\0");
-  return { hash: `sha256:${crypto.createHash("sha256").update(material).digest("hex")}`, type, stability };
+function clearStaleActive(db: DatabaseSync, providerID: string): void {
+  db.prepare("DELETE FROM opencode_key_rotator_active WHERE integration_id = ?").run(providerID);
 }
-
+function markActiveAlias(db: DatabaseSync, providerID: string, credentialID: string, alias: string, value: JsonObject): void {
+  db.prepare(
+    "INSERT INTO opencode_key_rotator_active(integration_id, credential_id, alias, time_updated) VALUES (?, ?, ?, ?) ON CONFLICT(integration_id) DO UPDATE SET credential_id=excluded.credential_id, alias=excluded.alias, time_updated=excluded.time_updated",
+  ).run(providerID, credentialID, alias, Date.now());
+}
+function replaceCredential(db: DatabaseSync, old: CredentialRow, value: JsonObject): string {
+  const id = generateCredentialID(db);
+  const now = Date.now();
+  db.prepare("DELETE FROM credential WHERE integration_id = ?").run(old.integration_id);
+  db.prepare(
+    "INSERT INTO credential(id, integration_id, label, value, connector_id, method_id, active, time_created, time_updated) VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?)",
+  ).run(id, old.integration_id, old.label || "default", JSON.stringify(value), now, now);
+  return id;
+}
+function calculateFingerprint(credential: JsonObject): Fingerprint {
+  const type = credential.type;
+  if (type === "oauth") {
+    const methodID = typeof credential.methodID === "string" ? credential.methodID : "";
+    const metadata = credential.metadata as JsonObject | undefined;
+    const account = typeof metadata?.accountID === "string" ? metadata.accountID : jwtAccount(credential.access);
+    if (account) return fingerprint("oauth", "stable", [type, methodID, account]);
+    return fingerprint("oauth", "unstable", [type, methodID, String(credential.refresh ?? ""), String(credential.access ?? "")]);
+  }
+  if (type === "key") return fingerprint("api", "stable", [type, String(credential.key ?? "")]);
+  return fingerprint("unknown", "unstable", [
+    JSON.stringify(
+      Object.fromEntries(
+        Object.keys(credential)
+          .sort()
+          .map((key) => [key, typeof credential[key]]),
+      ),
+    ),
+  ]);
+}
+function jwtAccount(token: unknown): string | undefined {
+  if (typeof token !== "string") return undefined;
+  try {
+    const part = token.split(".")[1];
+    const payload = JSON.parse(Buffer.from(part, "base64url").toString()) as JsonObject;
+    return typeof payload.account_id === "string" ? payload.account_id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+function fingerprint(type: Fingerprint["type"], stability: Fingerprint["stability"], parts: string[]): Fingerprint {
+  return { hash: `sha256:${crypto.createHash("sha256").update(parts.join("\0")).digest("hex")}`, type, stability };
+}
 function sameFingerprint(left: Fingerprint, right: Fingerprint): boolean {
   return left.hash === right.hash && left.type === right.type && left.stability === right.stability;
 }
-
 function validateProviderID(providerID: string): void {
-  if (!isSafeSegment(providerID)) throw new KeyStoreError("INVALID_INPUT", "Invalid provider ID");
+  if (!providerID || providerID.length > 200 || /[\u0000-\u001f\u007f]/.test(providerID))
+    throw new KeyStoreError("INVALID_INPUT", "Invalid provider ID");
 }
-
 function validateAlias(alias: string): void {
-  if (!isSafeSegment(alias)) {
-    throw new KeyStoreError(
-      "INVALID_INPUT",
-      "Alias must contain only letters, numbers, dots, underscores, or dashes, and cannot use reserved names",
-    );
-  }
-}
-
-function isSafeSegment(segment: string): boolean {
-  return SAFE_SEGMENT.test(segment) && !segment.includes("..") && !RESERVED_SEGMENTS.has(segment);
-}
-
-function readJsonObject(file: string, label: string): JsonObject {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new KeyStoreError("AUTH_INVALID", `Failed to read ${label}: ${message}`);
-  }
-  if (!isJsonObject(parsed)) throw new KeyStoreError("AUTH_INVALID", `${label} must contain a JSON object`);
-  return parsed;
-}
-
-function chmodIfExists(file: string, mode: number): void {
-  try {
-    fs.chmodSync(file, mode);
-  } catch {
-    // Non-fatal on filesystems that do not support chmod.
-  }
-}
-
-function isJsonObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isFingerprint(value: unknown): value is Fingerprint {
-  return (
-    isJsonObject(value) &&
-    typeof value.hash === "string" &&
-    (value.type === "oauth" || value.type === "api" || value.type === "wellknown" || value.type === "unknown") &&
-    (value.stability === "stable" || value.stability === "unstable")
-  );
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
-}
-
-function redactCredentialShape(credential: JsonObject): JsonObject {
-  return Object.fromEntries(
-    Object.keys(credential)
-      .sort()
-      .map((key) => [key, typeof credential[key]]),
-  );
+  if (typeof alias !== "string" || !alias.trim() || alias.length > 200 || /[\u0000-\u001f\u007f]/.test(alias))
+    throw new KeyStoreError("INVALID_INPUT", "Alias must be a non-empty label without control characters");
 }

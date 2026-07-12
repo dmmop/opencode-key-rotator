@@ -25,14 +25,13 @@ function runBin(args, env = {}) {
   };
 }
 
-test("init creates opencode.json, tui.json, and key-rotator config when missing", () => {
+test("init creates opencode.json and key-rotator config when missing", () => {
   const configDir = tempConfigDir();
   const { stdout, exitCode } = runBin(["init"], { OPENCODE_CONFIG_DIR: configDir });
 
   assert.equal(exitCode, 0);
   assert.match(stdout, /Added/);
   assert.equal(fs.existsSync(path.join(configDir, "opencode.json")), true);
-  assert.equal(fs.existsSync(path.join(configDir, "tui.json")), true);
 
   const keyRotatorConfigFile = path.join(configDir, "opencode-key-rotator", "config.json");
   assert.equal(fs.existsSync(keyRotatorConfigFile), true);
@@ -40,7 +39,7 @@ test("init creates opencode.json, tui.json, and key-rotator config when missing"
   assert.equal(keyRotatorConfig.ui.toastDurationMs, 11_000);
 
   const opencodeConfig = JSON.parse(fs.readFileSync(path.join(configDir, "opencode.json"), "utf8"));
-  assert.ok(opencodeConfig.plugin.includes("opencode-key-rotator"));
+  assert.ok(opencodeConfig.plugins.includes("opencode-key-rotator"));
 });
 
 test("init is idempotent", () => {
@@ -60,7 +59,7 @@ test("remove deletes plugin from configs", () => {
   assert.equal(exitCode, 0);
   assert.match(stdout, /Removed/);
   const opencodeConfig = JSON.parse(fs.readFileSync(path.join(configDir, "opencode.json"), "utf8"));
-  assert.equal(opencodeConfig.plugin, undefined);
+  assert.equal(opencodeConfig.plugins, undefined);
 });
 
 test("remove is idempotent", () => {

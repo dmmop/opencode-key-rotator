@@ -1,11 +1,18 @@
 #!/usr/bin/env node
 import { defaultPluginSpec, updateOpenCodeConfigs, type InstallerAction } from "./config-installer.js";
+import { migrateLegacy } from "./migration.js";
+import { getOpencodeRuntimeDirs } from "./opencode-runtime-paths.js";
 
 type CliOptions = {
-  action?: InstallerAction;
+  action?: InstallerAction | "migrate";
   spec: string;
   configDir?: string;
   help: boolean;
+  providerID?: string;
+  methodID?: string;
+  dataDir?: string;
+  dbFile?: string;
+  dryRun: boolean;
 };
 
 function main(): void {
@@ -13,6 +20,18 @@ function main(): void {
   if (options.help || !options.action) {
     printHelp();
     process.exit(options.help ? 0 : 1);
+  }
+
+  if (options.action === "migrate") {
+    const report = migrateLegacy({
+      dataDir: options.dataDir ?? getOpencodeRuntimeDirs().dataDir,
+      providerID: options.providerID,
+      methodID: options.methodID,
+      dbFile: options.dbFile,
+      dryRun: options.dryRun,
+    });
+    console.log(JSON.stringify(report, null, 2));
+    return;
   }
 
   const results = updateOpenCodeConfigs({
@@ -33,9 +52,9 @@ function main(): void {
 }
 
 function parseArgs(args: string[]): CliOptions {
-  const options: CliOptions = { spec: defaultPluginSpec(), help: false };
+  const options: CliOptions = { spec: defaultPluginSpec(), help: false, dryRun: false };
   const [action, ...rest] = args;
-  if (action === "init" || action === "remove") options.action = action;
+  if (action === "init" || action === "remove" || action === "migrate") options.action = action;
   if (action === "help" || action === "--help" || action === "-h") options.help = true;
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -48,6 +67,20 @@ function parseArgs(args: string[]): CliOptions {
     } else if (arg === "--config-dir") {
       options.configDir = requireValue(rest, index, arg);
       index += 1;
+    } else if (arg === "--provider") {
+      options.providerID = requireValue(rest, index, arg);
+      index += 1;
+    } else if (arg === "--method-id") {
+      options.methodID = requireValue(rest, index, arg);
+      index += 1;
+    } else if (arg === "--data-dir") {
+      options.dataDir = requireValue(rest, index, arg);
+      index += 1;
+    } else if (arg === "--db-file") {
+      options.dbFile = requireValue(rest, index, arg);
+      index += 1;
+    } else if (arg === "--dry-run") {
+      options.dryRun = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
@@ -66,6 +99,7 @@ function printHelp(): void {
   console.log(`Usage:
   opencode-key-rotator init [--spec <plugin-spec>] [--config-dir <dir>]
   opencode-key-rotator remove [--spec <plugin-spec>] [--config-dir <dir>]
+  opencode-key-rotator migrate [--provider <id>] [--method-id <id>] [--data-dir <dir>] [--db-file <path>] [--dry-run]
 
 Examples:
   opencode-key-rotator init
