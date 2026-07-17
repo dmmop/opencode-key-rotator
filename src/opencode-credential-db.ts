@@ -107,8 +107,10 @@ export function validateCredentialSchema(db: DatabaseSync): void {
 
 export function applyMigrations(db: DatabaseSync): void {
   db.exec(`CREATE TABLE IF NOT EXISTS opencode_key_rotator_migration (version INTEGER PRIMARY KEY, time_applied INTEGER NOT NULL);`);
-  const applied = db.prepare("SELECT version FROM opencode_key_rotator_migration WHERE version = ?").get(PLUGIN_SCHEMA_VERSION);
-  if (applied) return;
+  const applied = db.prepare("SELECT version FROM opencode_key_rotator_migration WHERE version = ?").get(PLUGIN_SCHEMA_VERSION) as
+    | { version: number | null }
+    | undefined;
+  if (applied?.version === PLUGIN_SCHEMA_VERSION) return;
   withWriteTransaction(db, () => {
     db.exec(`CREATE TABLE IF NOT EXISTS opencode_key_rotator_alias (
       integration_id TEXT NOT NULL, alias TEXT NOT NULL, value TEXT NOT NULL,

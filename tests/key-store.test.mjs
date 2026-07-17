@@ -33,6 +33,22 @@ test("uses opencode-next.db and stores aliases in namespaced tables", () => {
   assert.equal(store.getStatuses()[0].activeAlias, "primary");
 });
 
+test("creates alias tables when the migration version is absent", () => {
+  const dataDir = fixture();
+  const store = createKeyStore(dataDir);
+
+  store.saveCurrentProviderKey("openai", "primary", true);
+
+  const db = new DatabaseSync(path.join(dataDir, "opencode-next.db"));
+  const tables = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+    .all()
+    .map((row) => row.name);
+  assert.ok(tables.includes("opencode_key_rotator_alias"));
+  assert.ok(tables.includes("opencode_key_rotator_active"));
+  db.close();
+});
+
 test("switch preserves the OpenCode connection label and updates active metadata", () => {
   const dataDir = fixture();
   const store = createKeyStore(dataDir);
@@ -127,5 +143,58 @@ test("automatic rotation preserves the previous alias and active credential row"
     JSON.stringify({ type: "key", key: "one" }),
   );
   assert.equal(check.prepare("SELECT COUNT(*) AS count FROM credential WHERE integration_id = 'openai'").get().count, 1);
+  check.close();
+});
+
+test("switch preserves refreshed OAuth credentials after OpenCode replaces the credential row", () => {
+  const dataDir = fixture();
+  const store = createKeyStore(dataDir);
+  const initial = {
+    type: "oauth",
+    methodID: "chatgpt-browser",
+    refresh: "old-refresh",
+    access: "old-access",
+    expires: 1,
+    metadata: { accountID: "account-personal" },
+  };
+  const refreshed = {
+    ...initial,
+    refresh: "new-refresh",
+    access: "new-access",
+    expires: 2,
+  };
+  const other = {
+    ...initial,
+    refresh: "other-refresh",
+    access: "other-access",
+    metadata: { accountID: "account-other" },
+  };
+  const db = new DatabaseSync(path.join(dataDir, "opencode-next.db"));
+  db.prepare("UPDATE credential SET value = ? WHERE id = ?").run(JSON.stringify(initial), "cred_one");
+  db.close();
+  store.saveCurrentProviderKey("openai", "personal", true);
+
+  const replaced = new DatabaseSync(path.join(dataDir, "opencode-next.db"));
+  replaced.prepare("DELETE FROM credential WHERE id = ?").run("cred_one");
+  replaced
+    .prepare("INSERT INTO credential VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?)")
+    .run("cred_refreshed", "openai", "default", JSON.stringify(refreshed), 2, 2);
+  replaced.prepare("INSERT INTO opencode_key_rotator_alias VALUES (?, ?, ?, ?, ?)").run("openai", "other", JSON.stringify(other), 2, 2);
+  replaced.close();
+
+  assert.equal(store.getStatuses()[0].activeAlias, "personal");
+  assert.deepEqual(store.switchProviderKey("openai", "other"), {
+    providerID: "openai",
+    previousAlias: "personal",
+    activeAlias: "other",
+  });
+
+  const check = new DatabaseSync(path.join(dataDir, "opencode-next.db"));
+  assert.deepEqual(
+    JSON.parse(
+      check.prepare("SELECT value FROM opencode_key_rotator_alias WHERE integration_id = ? AND alias = ?").get("openai", "personal").value,
+    ),
+    refreshed,
+  );
   check.close();
 });

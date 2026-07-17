@@ -149,8 +149,10 @@ export function createKeyStore(dataDir: string) {
     validateAlias(alias);
     validateAlias(newAlias);
     write((database) => {
-      if (database.prepare("SELECT 1 FROM opencode_key_rotator_alias WHERE integration_id = ? AND alias = ?").get(providerID, newAlias))
-        throw new KeyStoreError("ALIAS_COLLISION", `Alias '${providerID}/${newAlias}' already exists`);
+      const existing = database
+        .prepare("SELECT COUNT(*) AS count FROM opencode_key_rotator_alias WHERE integration_id = ? AND alias = ?")
+        .get(providerID, newAlias) as { count: number };
+      if (existing.count > 0) throw new KeyStoreError("ALIAS_COLLISION", `Alias '${providerID}/${newAlias}' already exists`);
       try {
         const result = database
           .prepare("UPDATE opencode_key_rotator_alias SET alias = ?, time_updated = ? WHERE integration_id = ? AND alias = ?")
@@ -245,7 +247,7 @@ function inspectActive(
     | { alias: string; credential_id: string; time_updated: number }
     | undefined;
   if (!row) return {};
-  if (!credential || row.credential_id !== credential.id) return { staleAlias: row.alias };
+  if (!credential) return { staleAlias: row.alias };
   const alias = db
     .prepare("SELECT value FROM opencode_key_rotator_alias WHERE integration_id = ? AND alias = ?")
     .get(providerID, row.alias) as { value: string } | undefined;

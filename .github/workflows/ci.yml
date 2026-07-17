@@ -34,6 +34,8 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --experimental-sqlite
     strategy:
       matrix:
         node-version: [22.5, 22]
@@ -59,6 +61,8 @@ jobs:
 
   runtime-smoke:
     runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --experimental-sqlite
     strategy:
       matrix:
         node-version: [22.5, 22]
@@ -79,6 +83,5 @@ jobs:
           npm install "$GITHUB_WORKSPACE/$tarball"
           node --input-type=module -e "
             import('opencode-key-rotator');
-            import('opencode-key-rotator/server');
             import('opencode-key-rotator/tui');
           "

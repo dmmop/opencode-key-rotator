@@ -2,19 +2,25 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import plugin from "opencode-key-rotator/tui";
 
-test("V1 TUI adapter registers local key commands", async () => {
-  const commands = [];
+test("V2 TUI plugin registers local key commands", async () => {
+  let layer;
   await plugin.tui({
-    command: {
-      register(factory) {
-        commands.push(...factory());
+    keymap: {
+      registerLayer(value) {
+        layer = value;
       },
     },
   });
 
+  const commands = layer.commands;
   assert.deepEqual(
-    commands.map((command) => command.slash.name),
+    commands.map((command) => command.slashName),
     ["key-save", "key-switch", "key-status"],
   );
-  assert.ok(commands.every((command) => typeof command.onSelect === "function"));
+  assert.deepEqual(
+    commands.map((command) => command.name),
+    ["key_rotator.save", "key_rotator.switch", "key_rotator.status"],
+  );
+  assert.ok(commands.every((command) => command.namespace === "palette"));
+  assert.ok(commands.every((command) => typeof command.run === "function"));
 });

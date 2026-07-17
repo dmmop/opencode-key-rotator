@@ -60,7 +60,7 @@ async function enrichEvent(ctx: Context, event: unknown): Promise<unknown> {
 async function runNodeEventHandler(event: unknown): Promise<void> {
   const runner = join(dirname(fileURLToPath(import.meta.url)), "node-event-runner.js");
   await new Promise<void>((resolve) => {
-    const child = spawn("node", [runner], { stdio: ["pipe", "ignore", "pipe"] });
+    const child = spawn("node", ["--experimental-sqlite", runner], { stdio: ["pipe", "ignore", "pipe"] });
     let stderr = "";
     child.stderr.on("data", (chunk) => {
       stderr += String(chunk);

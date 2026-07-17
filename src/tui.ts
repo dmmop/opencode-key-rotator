@@ -1,4 +1,4 @@
-import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui";
+import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui";
 import { resolveOpencodeDataDir } from "./opencode-runtime-paths.js";
 import { KeyStoreError } from "./errors.js";
 import { createKeyStore, type KeyStatus, type KeyStore } from "./key-store.js";
@@ -8,41 +8,42 @@ const id = "opencode-key-rotator";
 const TOAST_DURATION_MS = 11_000;
 
 const tui: TuiPlugin = async (api) => {
-  registerSlashCommand(api, "key-save", "Save current provider key", () => openSaveKey(api));
-  registerSlashCommand(api, "key-switch", "Switch active provider key", () => openKeySwitch(api));
-  registerSlashCommand(api, "key-status", "Show key rotation status", () => openKeyStatus(api));
-};
-
-function registerSlashCommand(api: TuiPluginApi, name: string, title: string, run: () => void): void {
-  const legacyCommand = api.command;
-  if (legacyCommand) {
-    legacyCommand.register(() => [{ title, value: name, category: "Key Rotator", slash: { name }, onSelect: run }]);
-    return;
-  }
-
-  const keymap = api.keymap as unknown as {
-    registerLayer?: (input: { commands: Array<Record<string, unknown>> }) => void;
-  };
-  keymap.registerLayer?.({
+  api.keymap.registerLayer({
     commands: [
       {
-        namespace: "key-rotator",
-        name,
-        title,
+        namespace: "palette",
+        name: "key_rotator.save",
+        title: "Save current provider key",
         category: "Key Rotator",
-        slashName: name,
-        run,
+        slashName: "key-save",
+        run: () => openSaveKey(api),
+      },
+      {
+        namespace: "palette",
+        name: "key_rotator.switch",
+        title: "Switch active provider key",
+        category: "Key Rotator",
+        slashName: "key-switch",
+        run: () => openKeySwitch(api),
+      },
+      {
+        namespace: "palette",
+        name: "key_rotator.status",
+        title: "Show key rotation status",
+        category: "Key Rotator",
+        slashName: "key-status",
+        run: () => openKeyStatus(api),
       },
     ],
   });
-}
+};
 
 function openSaveKey(api: TuiPluginApi): void {
   const store = getStore(api);
   if (!store) return;
   const providers = safeCall(() => store.listProviderIDs(), api);
   if (!providers || providers.length === 0) {
-    showAlert(api, "No providers", "No providers were found in auth.json or saved keys.");
+    showAlert(api, "No providers", "No active provider credentials or saved keys were found.");
     return;
   }
 
@@ -257,7 +258,7 @@ function safeCall<T>(operation: () => T, api: TuiPluginApi): T | undefined {
   }
 }
 
-const pluginModule = {
+const pluginModule: TuiPluginModule & { id: string } = {
   id,
   tui,
 };
